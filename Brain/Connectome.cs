@@ -21,11 +21,17 @@ namespace FlyRarria.Brain
 		public readonly int[] BodyIds;
 		public readonly double[] SomaX;
 		public readonly double[] SomaY;
+		/// Where each neuron is in the fly, 3 per neuron (x, y, z in male-cns voxels):
+		/// soma, or synapse centroid when the soma is outside the CNS. Only the neuroscope
+		/// uses it. Null when the circuit files carry no pos.
+		public readonly float[] Positions;
 
 		public Connectome(
 			int neuronCount, int[] rowStart, int[] targets, ushort[] synapseCounts,
-			sbyte[] signs, string[] types, int[] bodyIds, double[] somaX, double[] somaY)
+			sbyte[] signs, string[] types, int[] bodyIds, double[] somaX, double[] somaY,
+			float[] positions = null)
 		{
+			Positions = positions;
 			NeuronCount = neuronCount;
 			RowStart = rowStart;
 			Targets = targets;

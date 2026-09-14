@@ -39,6 +39,8 @@ class CircuitNet:
         seen = set()  # circuits share neurons and edges; count each edge once (as CircuitLoader.cs)
         for f in sorted(circuits_dir.glob("*.json")):
             m = json.loads(f.read_text())
+            if m["format"] == "flyraria-scope-shape-v1":  # neuroscope outline, not a circuit
+                continue
             assert m["format"] == "flyraria-circuit-v1", f
             for n in m["neurons"]:
                 if n["body"] in idx:

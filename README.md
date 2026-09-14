@@ -14,8 +14,8 @@ Verified headlessly (bench + the C# brain driven with scripted frames): loom -> 
 - `Circuits/` — extracted circuit JSON (via `tools/extract_circuits.py`, neuPrint male-cns:v1.0)
 - `Content/Pets/` — `MoteProjectile` / `MoteBuff` / `MoteItem`
 - `Content/Bond/` — bond levels + hunger persistence
-- `Content/Debug/` — `/fly stats|senses`
-- `tools/` — circuit extractor + headless bench
+- `Content/Debug/` — `/fly stats|senses|scope`; the neuroscope overlay (`N` or `/fly scope`) draws the real brain and VNC silhouette (male-cns neuropil meshes, brain seen from behind) with every neuron where it sits in the fly (soma, or synapse centroid for sensory neurons), lights the ones spiking, and traces their strongest synapses (orange excitatory, blue inhibitory), with live input drives and decoder readout rates labelled
+- `tools/` — circuit extractor, neuroscope silhouette baker (`scope_shape.py`) + headless bench
 
 ## Build
 
@@ -26,6 +26,7 @@ Requires tModLoader (Terraria 1.4.5) + .NET 8 SDK (`mise use dotnet@8`). Copy/cl
 ```
 python3 -m venv .venv && .venv/bin/pip install requests numpy scipy
 .venv/bin/python tools/extract_circuits.py --out Circuits/   # anonymous neuPrint, ~30 s
+.venv/bin/python tools/scope_shape.py                         # neuroscope brain outline, ~10 s
 .venv/bin/python tools/bench.py --circuits Circuits/         # all five must PASS
 ```
 

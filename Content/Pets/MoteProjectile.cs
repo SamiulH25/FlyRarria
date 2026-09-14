@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Microsoft.Xna.Framework;
 using Terraria;
 using Terraria.ID;
@@ -34,6 +35,27 @@ namespace FlyRarria.Content.Pets
 
 		public MoteMode CurrentMode => _cmd.Mode;
 		public bool BrainReflex => _cmd.Reflex;
+		/// <summary>The loaded circuit graph, or null while running the [reflex] fallback.</summary>
+		public Connectome Graph { get; private set; }
+		public LifNetwork Net => _net;
+		public PopulationIndex Pops => _pops;
+		/// <summary>Brain steps so far; Net.SpikesThisTick belongs to the latest one.</summary>
+		public int BrainTicks { get; private set; }
+		/// <summary>The sensory drives applied on the latest brain step.</summary>
+		public IReadOnlyList<(string type, string side, double hz)> LastDrives { get; private set; } = new List<(string, string, double)>();
+
+		/// <summary>The player's active mote, or null.</summary>
+		public static MoteProjectile FindFor(Player player)
+		{
+			for (int i = 0; i < Main.maxProjectiles; i++) {
+				var p = Main.projectile[i];
+				if (p.active && p.type == ModContent.ProjectileType<MoteProjectile>()
+					&& p.owner == player.whoAmI && p.ModProjectile is MoteProjectile m) {
+					return m;
+				}
+			}
+			return null;
+		}
 
 		public override void SetStaticDefaults()
 		{
@@ -68,6 +90,8 @@ namespace FlyRarria.Content.Pets
 				var drives = SensoryEncoders.Encode(frame);
 				SensoryEncoders.Apply(_net, _pops, drives);
 				_net.Step(100); // 100 x 0.5ms = 50ms brain time
+				LastDrives = drives;
+				BrainTicks++;
 				_cmd = _decoder.Decode(brainDriven: _brainLoaded);
 				TendBond(player, frame);
 			}
@@ -85,6 +109,7 @@ namespace FlyRarria.Content.Pets
 			// graph so the pet stays a working follower and the HUD reports [reflex].
 			Connectome graph = CircuitLoader.TryLoadAll();
 			_brainLoaded = graph != null;
+			Graph = graph;
 			graph ??= new Connectome(0, new int[0], new int[0], new ushort[0],
 				new sbyte[0], new string[0], new int[0], new double[0], new double[0]);
 			_net = new LifNetwork(graph, 0.5, LifNetwork.Params.Shiu2024());
@@ -99,9 +124,10 @@ namespace FlyRarria.Content.Pets
 			Vector2 toPlayer = player.Center - Projectile.Center;
 			float dist = toPlayer.Length();
 
-			// Chase: the owner is the target when far, on the side they are on.
-			if (dist > 120) {
-				float side = MathHelper.Clamp(toPlayer.X / 60f, 0f, 1f);
+			// Chase: the owner is LC10a's target when far or on the move, on the side
+			// they are on. Close and still reads as nothing to chase, so the brain rests.
+			if (dist > 120 || player.velocity.Length() > 1f) {
+				float side = MathHelper.Clamp(System.Math.Abs(toPlayer.X) / 60f, 0.3f, 1f);
 				if (toPlayer.X < 0) {
 					f.ChaseLeft = side;
 				}
@@ -135,8 +161,15 @@ namespace FlyRarria.Content.Pets
 			else {
 				f.LoomRight = worst;
 			}
-			f.WindLeft = MathHelper.Clamp(-Projectile.velocity.X / 12f, 0f, 1f);
-			f.WindRight = MathHelper.Clamp(Projectile.velocity.X / 12f, 0f, 1f);
+			// Wind: world wind only, and only outdoors. Airflow from the mote's own flight
+			// is left out (flies cancel self-motion with efference copy); feeding it in
+			// drove JO past the groom threshold at follow speed. JO tips into GROOM between
+			// 0.06 and 0.08 regardless of chase, so x0.1 grooms only in strong wind (~0.7+).
+			if (Projectile.Center.Y / 16f < Main.worldSurface) {
+				float wind = MathHelper.Clamp(Main.windSpeedCurrent * 0.1f, -1f, 1f);
+				f.WindLeft = MathHelper.Max(wind, 0f); // blowing rightward arrives from the left
+				f.WindRight = MathHelper.Max(-wind, 0f);
+			}
 			f.LightLevel = Lighting.Brightness((int)(Projectile.Center.X / 16), (int)(Projectile.Center.Y / 16));
 			f.Touch = Main.raining ? 0.4f : 0f;
 			ScanFood(player, ref f);
@@ -277,7 +310,10 @@ namespace FlyRarria.Content.Pets
 			Vector2 toPlayer = player.Center - Projectile.Center;
 			float dist = toPlayer.Length();
 
-			if (dist > TeleportTiles * 16) {
+			// A NaN position fails every distance test, so it also has to trigger the teleport,
+			// or the mote (and the HUD anchored to it) vanishes for good.
+			bool lost = !float.IsFinite(dist) || !float.IsFinite(Projectile.velocity.X) || !float.IsFinite(Projectile.velocity.Y);
+			if (lost || dist > TeleportTiles * 16) {
 				Projectile.Center = player.Center + new Vector2(0, -48);
 				Projectile.velocity = Vector2.Zero;
 				return;
@@ -320,7 +356,8 @@ namespace FlyRarria.Content.Pets
 						desired = Vector2.Normalize(toPlayer) * FollowSpeed * (_cmd.Forward > 0 ? 1.3f : 1f);
 					}
 					else if (dist < 48) {
-						desired = -Vector2.Normalize(toPlayer) * 2f;
+						// The buff spawns the mote exactly on the owner (dist 0): Normalize would give NaN.
+						desired = -toPlayer.SafeNormalize(Vector2.UnitY) * 2f;
 					}
 					if (_cmd.Yaw != 0) {
 						desired += new Vector2(MathHelper.Clamp(_cmd.Yaw / 10f, -2f, 2f), 0);

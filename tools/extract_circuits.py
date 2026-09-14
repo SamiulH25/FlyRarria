@@ -38,12 +38,16 @@ lives in Brain/Connectome.cs and bench.SIGN_NEG), side, and x = side sign
 split "L"/"R" populations on the sign of x. side is somaSide, or the _L/_R suffix
 of instance for neurons without one (sensory neurons like JO and bristles have
 their somata outside the CNS, so somaSide is null for them).
+pos = [x, y, z] in male-cns voxels for the neuroscope overlay: somaLocation, or
+the mean of up to POS_SYNAPSES of the neuron's synapses when it has no soma in
+the volume (sensory neurons). tools/scope_shape.py projects the same coordinates.
 
 Usage:
   pip install requests numpy
   python tools/extract_circuits.py --out Circuits/
   python tools/extract_circuits.py --circuit escape --min-weight 5
   python tools/extract_circuits.py --list-only   # print what would be fetched
+  python tools/extract_circuits.py --positions-only   # add pos to existing files
 """
 import argparse
 import json
@@ -79,6 +83,7 @@ CIRCUITS = {
 BRIDGE_HOPS = {"feed": 2}
 
 CHUNK = 2000  # bodyIds per inlined IN-list
+POS_SYNAPSES = 300  # synapses averaged for a neuron without a soma location
 
 
 def type_match(seeds, var: str = "n") -> str:
@@ -140,6 +145,35 @@ def partners(bodies, minw: int, direction: str) -> set:
     return out
 
 
+def fetch_positions(bodies) -> dict:
+    """bodyId -> [x, y, z] voxels: somaLocation, else a synapse centroid."""
+    pos = {}
+    for part in chunks(bodies):
+        for body, soma in cypher(
+                f"MATCH (n :Neuron) WHERE n.bodyId IN {json.dumps(part)} "
+                f"RETURN n.bodyId, n.somaLocation"):
+            if soma:
+                pos[body] = [round(c) for c in soma["coordinates"]]
+    rest = sorted(set(bodies) - set(pos))
+    for i in range(0, len(rest), 150):  # the per-neuron subquery is slow in big batches
+        for body, x, y, z, k in cypher(
+                f"UNWIND {json.dumps(rest[i:i + 150])} AS b MATCH (n :Neuron {{bodyId: b}}) "
+                f"CALL {{ WITH n MATCH (n)-[:Contains]->(:SynapseSet)-[:Contains]->(s :Synapse) "
+                f"WITH s LIMIT {POS_SYNAPSES} RETURN avg(s.location.x) AS x, avg(s.location.y) AS y, "
+                f"avg(s.location.z) AS z, count(s) AS k }} RETURN n.bodyId, x, y, z, k"):
+            if k:
+                pos[body] = [round(x), round(y), round(z)]
+    return pos
+
+
+def add_positions(neurons) -> None:
+    """Set pos on every neuron record neuPrint can place (in place)."""
+    pos = fetch_positions([n["body"] for n in neurons])
+    for n in neurons:
+        if n["body"] in pos:
+            n["pos"] = pos[n["body"]]
+
+
 def fetch_circuit(name: str, seeds, min_weight: int) -> dict:
     minw = int(min_weight)
     seed_ids = {r[0] for r in cypher(f"MATCH (n :Neuron) WHERE {type_match(seeds)} RETURN n.bodyId")}
@@ -162,6 +196,7 @@ def fetch_circuit(name: str, seeds, min_weight: int) -> dict:
             side = neuron_side(soma_side, instance)
             neurons.append({"body": body, "type": typ or "?", "nt": cnt or pred or "",
                             "x": side_sign(side), "side": side})
+    add_positions(neurons)
     grown_list = json.dumps(sorted(grown))
     edges = []
     for part in chunks(grown):
@@ -182,9 +217,20 @@ def main() -> int:
     ap.add_argument("--circuit", choices=sorted(CIRCUITS), default=None)
     ap.add_argument("--min-weight", type=int, default=5)
     ap.add_argument("--list-only", action="store_true")
+    ap.add_argument("--positions-only", action="store_true",
+                    help="add pos to the existing circuit files without refetching the wiring")
     args = ap.parse_args()
 
     targets = [args.circuit] if args.circuit else sorted(CIRCUITS)
+    if args.positions_only:
+        for name in targets:
+            path = Path(args.out) / f"{name}.json"
+            manifest = json.loads(path.read_text())
+            add_positions(manifest["neurons"])
+            path.write_text(json.dumps(manifest) + "\n")
+            print(f"{name}: positions for {sum(1 for n in manifest['neurons'] if 'pos' in n)}"
+                  f"/{len(manifest['neurons'])} neurons", flush=True)
+        return 0
     if args.list_only:
         for name in targets:
             seeds = CIRCUITS[name]

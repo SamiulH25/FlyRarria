@@ -46,6 +46,12 @@ namespace FlyRarria.Brain
 			};
 		}
 
+		/// <summary>The motor/descending populations Decode reads, in ladder order (labelled on the neuroscope).</summary>
+		public static readonly (string type, string side)[] Readouts = {
+			("DNp01", null), ("MN9", null), ("pIP10", null), ("DNg62", null), ("DNge078", null),
+			("DNa02", "L"), ("DNa02", "R"), ("DNp09", null), ("DNg100", null), ("MDN", null),
+		};
+
 		private readonly LifNetwork _net;
 		private readonly PopulationIndex _pops;
 		private readonly Thresholds _t;
@@ -90,7 +96,9 @@ namespace FlyRarria.Brain
 				cmd.Forward = -1;
 				return cmd;
 			}
-			if (fwd >= _t.SteerMinHz || yaw != 0) {
+			// Yaw needs a real rate difference: the rate EMA decays toward 0 but never
+			// reaches it, so "yaw != 0" would latch FOLLOW forever after one chase.
+			if (fwd >= _t.SteerMinHz || System.Math.Abs(yaw) >= _t.SteerMinHz) {
 				cmd.Mode = MoteMode.Follow;
 				cmd.Forward = fwd >= _t.SteerMinHz ? 1 : 0;
 				cmd.Yaw = (float)yaw;
