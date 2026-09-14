@@ -3,7 +3,8 @@
 
 extract_circuits.py pulls small named circuits; this is all of it: every neuPrint
 :Neuron in male-cns:v1.0 (176,422) and every connection between two of them with
-at least --min-weight synapses (6,287,789 connections at 5).
+at least --min-weight synapses. The default, 1, keeps all of them: 25,862,574
+connections, 125,024,863 synapses (5 would keep 6,287,789 and 90,297,299).
 
 Sources:
   wiring   Janelia's flat-connectome export (connectome-weights-...-minconf-0.5.feather,
@@ -40,7 +41,7 @@ Brain/ConnectomeFile.cs reads it.
 Usage:
   pip install pyarrow numpy requests
   python tools/extract_connectome.py
-  python tools/extract_connectome.py --min-weight 1 --out /tmp/male-cns-all.connectome.gz
+  python tools/extract_connectome.py --min-weight 5 --out /tmp/male-cns-w5.connectome.gz
 """
 import argparse
 import gzip
@@ -179,7 +180,7 @@ def check_circuits(index, types, nts, sides, positions, row_start, post_i, weigh
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--min-weight", type=int, default=5)
+    ap.add_argument("--min-weight", type=int, default=1)
     ap.add_argument("--out", default=str(ROOT / "Circuits" / "male-cns.connectome.gz"))
     args = ap.parse_args()
     t0 = time.time()
