@@ -11,6 +11,7 @@ namespace FlyRarria.Content.Pets
 		{
 			Item.CloneDefaults(ItemID.ZephyrFish);
 			Item.buffType = ModContent.BuffType<MoteBuff>();
+			Item.shoot = ModContent.ProjectileType<MoteProjectile>();
 			Item.value = Item.buyPrice(gold: 1);
 			Item.rare = ItemRarityID.Blue;
 		}

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+using ReLogic.Graphics;
 using Terraria;
 using Terraria.GameContent;
 using Terraria.ModLoader;
@@ -20,7 +21,7 @@ namespace FlyRarria.Content.Debug
 		public override void ModifyInterfaceLayers(List<GameInterfaceLayer> layers)
 		{
 			int idx = layers.FindIndex(l => l.Name == "Vanilla: Entity Health Bars");
-			var layer = new LegacyInterfaceLayer("FlyRarria: Mote", DrawMote, InterfaceScaleType.UI);
+			var layer = new LegacyGameInterfaceLayer("FlyRarria: Mote", DrawMote, InterfaceScaleType.UI);
 			if (idx >= 0) {
 				layers.Insert(idx, layer);
 			}

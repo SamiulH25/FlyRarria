@@ -8,7 +8,7 @@ blendi-remade/fly-brain-minecraft docs/VALIDATION.md, scaled to circuits):
   sugar   sugar GRNs @120Hz -> MN9 30-90Hz, Kenyon cells ~0 (no KCs in circuits)
   bitter  bitter + sugar -> MN9 suppressed to 0-10Hz
   loom    LC4+LPLC2 @150Hz -> DNp01 burst, decoder enters ESCAPE
-  groom   JO/bristle proxies @150Hz -> aDN1 (DNg62) high
+  groom   JO-FV/JO-CM/BM_InOm @150Hz -> aDN1 (DNg62) high
 
 The Python model must match Brain/LifNetwork.cs exactly: current-based LIF,
 tau_m 20ms, tau_s 5ms, rest/reset -52mV, threshold -45mV, refractory 2.2ms,
@@ -17,7 +17,7 @@ exact linear per-step integration. Any intentional divergence must be ported
 to the C# side too.
 
 Usage:
-  pip install numpy
+  pip install numpy scipy
   python tools/bench.py --circuits Circuits/
   python tools/bench.py --circuits Circuits/ --experiment loom --gain 0.65
 """
@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from scipy import sparse
 
 SIGN_NEG = {"gaba", "glutamate", "glut", "histamine", "hist"}
 
@@ -35,6 +36,7 @@ class CircuitNet:
     def __init__(self, circuits_dir: Path, gain=0.65, dt_ms=0.5, seed=7):
         nlist, elist = [], []
         idx = {}
+        seen = set()  # circuits share neurons and edges; count each edge once (as CircuitLoader.cs)
         for f in sorted(circuits_dir.glob("*.json")):
             m = json.loads(f.read_text())
             assert m["format"] == "flyraria-circuit-v1", f
@@ -44,6 +46,9 @@ class CircuitNet:
                 idx[n["body"]] = len(nlist)
                 nlist.append(n)
             for pre, post, w in m["edges"]:
+                if (pre, post) in seen:
+                    continue
+                seen.add((pre, post))
                 elist.append((idx[pre], idx[post], w))
         self.n = len(nlist)
         self.types = [n["type"] for n in nlist]
@@ -51,10 +56,12 @@ class CircuitNet:
         sign = np.array([1 if (n.get("nt", "") or "").strip().lower() not in SIGN_NEG else -1
                          for n in nlist], float)
         w = np.array([c for _, _, c in elist], float)
-        pre = np.array([p for p, _, _ in elist])
-        post = np.array([q for _, q, _ in elist])
-        self.W = np.zeros((self.n, self.n))
-        self.W[post, pre] = w * sign[pre] * 0.275 * gain
+        pre = np.array([p for p, _, _ in elist], dtype=np.int64)
+        post = np.array([q for _, q, _ in elist], dtype=np.int64)
+        # Sparse CSC (post x pre): a dense n x n matrix would need ~250 GB at
+        # full-brain scale (176k neurons); this stores only the real edges.
+        self.W = sparse.csc_matrix((w * sign[pre] * 0.275 * gain, (post, pre)),
+                                   shape=(self.n, self.n))
         self.dt = dt_ms
         self.rng = np.random.default_rng(seed)
         self.tau_m, self.tau_s = 20.0, 5.0
@@ -114,7 +121,8 @@ class CircuitNet:
             self.refr[active] -= 0
             self.refr[self.refr > 0] -= 1
             if fired.any():
-                self.queue[self.qi] += self.W[:, fired].sum(axis=1)
+                # Column slice touches only the spiking neurons' outgoing edges.
+                self.queue[self.qi] += self.W[:, np.flatnonzero(fired)].sum(axis=1).A1
             spikes += fired
         secs = ms / 1000.0
         return spikes / secs if secs else spikes
@@ -138,7 +146,7 @@ def experiment(net: CircuitNet, name: str):
         total = net.last.sum()
         return total == 0, f"total spikes={total:.0f} (want 0)"
     if name == "sugar":
-        for t, hz in [("LB3b", 120), ("LB3c", 120), ("PhG1", 100), ("LgLG3", 80)]:
+        for t, hz in [("LB3b", 120), ("LB3c", 120), ("PhG1a", 100), ("LgLG3", 80)]:
             net.drive(t, hz)
         net.run(2000)
         mn9 = net.rate("MN9")
@@ -161,7 +169,7 @@ def experiment(net: CircuitNet, name: str):
         return ok, f"DNp01={gf:.0f}Hz (want burst >100)"
     if name == "groom":
         net.drive("DNg62", 0)  # driven via JO proxies below
-        for t in ("JO", "Bristle", "BM"):
+        for t in ("JO-FV", "JO-CM", "BM_InOm"):
             for i in net.pop(t):
                 net.hz[i] = 150
         net.run(2000)

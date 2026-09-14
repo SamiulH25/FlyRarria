@@ -38,7 +38,7 @@ namespace FlyRarria.Brain
 			public double BackwardMdnHz;
 
 			public static Thresholds Default => new Thresholds {
-				FeedMn9Hz = 20,
+				FeedMn9Hz = 35, // sugar drives MN9 ~57Hz; touch/bristles leak ~25Hz into it
 				GroomADnHz = 40,
 				SongPip10Hz = 15,
 				SteerMinHz = 3,

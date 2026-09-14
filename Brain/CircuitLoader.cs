@@ -24,6 +24,10 @@ namespace FlyRarria.Brain
 			var neurons = new List<(int body, string type, string nt, double x, double y)>();
 			var edges = new List<(int pre, int post, int count)>();
 			var asm = Assembly.GetExecutingAssembly();
+			// Circuits share neurons (and so edges): index bodies across all files and
+			// keep each pre->post edge once, so shared cells and synapses aren't doubled.
+			var indexByBody = new Dictionary<long, int>();
+			var seenEdges = new HashSet<(int, int)>();
 
 			foreach (string name in Circuits) {
 				string resource = $"FlyRarria.Circuits.{name}.json";
@@ -36,7 +40,6 @@ namespace FlyRarria.Brain
 				if (root.GetProperty("format").GetString() != "flyraria-circuit-v1") {
 					continue;
 				}
-				var indexByBody = new Dictionary<long, int>();
 				foreach (var n in root.GetProperty("neurons").EnumerateArray()) {
 					long body = n.GetProperty("body").GetInt64();
 					if (indexByBody.ContainsKey(body)) {

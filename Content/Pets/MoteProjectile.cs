@@ -183,8 +183,8 @@ namespace FlyRarria.Content.Pets
 				return true;
 			}
 			return item.buffType == BuffID.WellFed
-				|| item.buffType == BuffID.PlentySatisfied
-				|| item.buffType == BuffID.ExquisitelyStuffed;
+				|| item.buffType == BuffID.WellFed2
+				|| item.buffType == BuffID.WellFed3;
 		}
 
 		private static bool IsBitter(Item item)
@@ -192,8 +192,7 @@ namespace FlyRarria.Content.Pets
 			return item.type == ItemID.RottenChunk
 				|| item.type == ItemID.Vertebrae
 				|| item.type == ItemID.Stinger
-				|| item.type == ItemID.SpiderFang
-				|| item.type == ItemID.Pufferfish;
+				|| item.type == ItemID.SpiderFang;
 		}
 
 		private static int CountCompany(Player player)

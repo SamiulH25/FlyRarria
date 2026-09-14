@@ -44,11 +44,13 @@ namespace FlyRarria.Brain
 		private readonly double[] _poissonHz;
 		private readonly Queue<(int target, double dg, int dueStep)> _delayed;
 		private readonly List<int> _spikesThisTick = new List<int>();
+		private readonly int[] _windowSpikes;
 		private readonly double[] _rateEma;
 		private readonly Random _rng = new Random();
 		private int _step;
 
 		public double DtMs { get; }
+		/// <summary>Every spike during the last <see cref="Step"/> call (a neuron may repeat).</summary>
 		public IReadOnlyList<int> SpikesThisTick => _spikesThisTick;
 
 		public LifNetwork(Connectome graph, double dtMs, Params p)
@@ -60,6 +62,7 @@ namespace FlyRarria.Brain
 			_g = new double[graph.NeuronCount];
 			_refractoryLeft = new double[graph.NeuronCount];
 			_poissonHz = new double[graph.NeuronCount];
+			_windowSpikes = new int[graph.NeuronCount];
 			_rateEma = new double[graph.NeuronCount];
 			_delayed = new Queue<(int, double, int)>();
 			Reset();
@@ -82,7 +85,7 @@ namespace FlyRarria.Brain
 
 		public void ClearStimuli() => Array.Clear(_poissonHz, 0, _poissonHz.Length);
 
-		/// <summary>Advance <paramref name="steps"/> integration steps. Returns spikes on the final step.</summary>
+		/// <summary>Advance <paramref name="steps"/> integration steps and update the rate estimates.</summary>
 		public void Step(int steps)
 		{
 			_spikesThisTick.Clear();
@@ -101,7 +104,7 @@ namespace FlyRarria.Brain
 				for (int i = 0; i < _graph.NeuronCount; i++) {
 					// Poisson sensory drive (as in the paper).
 					if (_poissonHz[i] > 0 && _rng.NextDouble() < _poissonHz[i] * stepSec) {
-						Fire(i, delaySteps, s == steps - 1);
+						Fire(i, delaySteps);
 						continue;
 					}
 					if (_refractoryLeft[i] > 0) {
@@ -111,16 +114,21 @@ namespace FlyRarria.Brain
 					_v[i] = _p.RestMv + (_v[i] - _p.RestMv) * decayV + _g[i] * (1.0 - decayV);
 					_g[i] *= decayG;
 					if (_v[i] >= _p.ThresholdMv) {
-						Fire(i, delaySteps, s == steps - 1);
+						Fire(i, delaySteps);
 					}
 				}
 			}
 
-			// EMA rates over the final-step window for the decoder.
+			// EMA of each neuron's rate over this window. Counts every spike in the
+			// window, so rates are real Hz like tools/bench.py and the decoder thresholds.
 			double alpha = 1.0 - Math.Exp(-steps * DtMs / 150.0);
-			var counted = new HashSet<int>(_spikesThisTick);
+			double windowSec = steps * stepSec;
+			Array.Clear(_windowSpikes, 0, _windowSpikes.Length);
+			foreach (int i in _spikesThisTick) {
+				_windowSpikes[i]++;
+			}
 			for (int i = 0; i < _graph.NeuronCount; i++) {
-				double inst = counted.Contains(i) ? 1.0 / (steps * stepSec) : 0.0;
+				double inst = _windowSpikes[i] / windowSec;
 				_rateEma[i] += alpha * (inst - _rateEma[i]);
 			}
 		}
@@ -139,14 +147,12 @@ namespace FlyRarria.Brain
 			return sum / population.Length;
 		}
 
-		private void Fire(int i, int delaySteps, bool record)
+		private void Fire(int i, int delaySteps)
 		{
 			_v[i] = _p.RestMv;
 			_g[i] = 0;
 			_refractoryLeft[i] = _p.RefractoryMs;
-			if (record) {
-				_spikesThisTick.Add(i);
-			}
+			_spikesThisTick.Add(i);
 			double dv = _graph.Signs[i] * _p.WeightMvPerSynapse * _p.Gain;
 			int rowEnd = i + 1 < _graph.NeuronCount ? _graph.RowStart[i + 1] : _graph.Targets.Length;
 			for (int e = _graph.RowStart[i]; e < rowEnd; e++) {

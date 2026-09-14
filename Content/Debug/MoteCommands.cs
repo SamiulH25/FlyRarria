@@ -30,7 +30,7 @@ namespace FlyRarria.Content.Debug
 				return;
 			}
 			if (args[0] == "senses") {
-				caller.Reply($"light near mote, rain={Main.raining}, night={Main.nightTime}, hostiles tracked in 30-tile radius");
+				caller.Reply($"light near mote, rain={Main.raining}, night={!Main.dayTime}, hostiles tracked in 30-tile radius");
 				return;
 			}
 			caller.Reply(Usage);

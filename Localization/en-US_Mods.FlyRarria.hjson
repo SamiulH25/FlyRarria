@@ -1,0 +1,15 @@
+Buffs: {
+	MoteBuff: {
+		DisplayName: Mote Buff
+		Description: Mods.FlyRarria.Buffs.MoteBuff.Description
+	}
+}
+
+Items: {
+	MoteItem: {
+		DisplayName: Mote Item
+		Tooltip: ""
+	}
+}
+
+Projectiles.MoteProjectile.DisplayName: Mote Projectile

@@ -29,7 +29,7 @@ namespace FlyRarria.Content.Bond
 			return bond;
 		}
 
-		public bool IsAsleep(Player player) => Main.nightTime && Get(player).Level >= 4;
+		public bool IsAsleep(Player player) => !Main.dayTime && Get(player).Level >= 4;
 
 		public override void SaveWorldData(TagCompound tag)
 		{
@@ -58,7 +58,7 @@ namespace FlyRarria.Content.Bond
 
 		public void Feed(bool sweet)
 		{
-			Hunger = MathHelper.ClampRef(Hunger + (sweet ? 25f : -5f));
+			Hunger = BondMath.ClampRef(Hunger + (sweet ? 25f : -5f));
 			if (sweet) {
 				Xp += 5;
 			}
@@ -68,7 +68,7 @@ namespace FlyRarria.Content.Bond
 		public void Tick(float dtMinutes) => Hunger -= dtMinutes * 1.5f;
 	}
 
-	internal static class MathHelper
+	internal static class BondMath
 	{
 		public static float ClampRef(float v) => v < 0 ? 0 : v > 100 ? 100 : v;
 	}

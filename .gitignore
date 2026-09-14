@@ -23,3 +23,6 @@ Thumbs.db
 .mise/
 __pycache__/
 *.pyc
+
+# Python venv
+.venv/

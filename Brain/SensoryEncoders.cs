@@ -52,11 +52,13 @@ namespace FlyRarria.Brain
 			Add("ORN_VA2", f.FoodSmell, 60);
 
 			// Mechano: wind splits by side; touch/damage drive bristles + grooming JO.
-			Add("JO Wind", f.WindLeft, 120, "L");
-			Add("JO Wind", f.WindRight, 120, "R");
-			Add("JO-F", f.Touch, 120);
-			Add("Bristle", f.Touch, 100);
-			Add("Bristle", f.DamageFlash, 200);
+			Add("prefix:JO-C", f.WindLeft, 120, "L"); // JO-C/E: static antennal deflection (wind)
+			Add("prefix:JO-E", f.WindLeft, 120, "L");
+			Add("prefix:JO-C", f.WindRight, 120, "R");
+			Add("prefix:JO-E", f.WindRight, 120, "R");
+			Add("JO-FV", f.Touch, 120);
+			Add("BM_InOm", f.Touch, 100);
+			Add("BM_InOm", f.DamageFlash, 200);
 
 			// Thermo + social flavor.
 			Add("TRN_VP2", f.Heat, 100);
