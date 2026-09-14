@@ -13,6 +13,7 @@ ModLoader/
 
 # Circuit raw fetches (large, regenerable)
 /Circuits/raw/
+/.cache/
 
 # OS / editor
 .DS_Store

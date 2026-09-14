@@ -10,12 +10,12 @@ Verified headlessly (bench + the C# brain driven with scripted frames): loom -> 
 
 ## Layout
 
-- `Brain/` — engine-independent LIF core (Shiu et al. 2024 params): `Connectome`, `LifNetwork`, `SensoryFrame`, `SensoryEncoders`, `MotorDecoder`, `PopulationIndex`
-- `Circuits/` — extracted circuit JSON (via `tools/extract_circuits.py`, neuPrint male-cns:v1.0)
+- `Brain/` — engine-independent LIF core (Shiu et al. 2024 params): `Connectome`, `ConnectomeFile`, `LifNetwork`, `SensoryFrame`, `SensoryEncoders`, `MotorDecoder`, `PopulationIndex`
+- `Circuits/` — extracted circuit JSON (via `tools/extract_circuits.py`, neuPrint male-cns:v1.0), and `male-cns.connectome.gz`: the whole male CNS, 176,422 neurons and 6,287,789 connections of 5+ synapses (via `tools/extract_connectome.py`; not loaded by the game yet)
 - `Content/Pets/` — `MoteProjectile` / `MoteBuff` / `MoteItem`
 - `Content/Bond/` — bond levels + hunger persistence
 - `Content/Debug/` — `/fly stats|senses|scope`; the neuroscope overlay (`N` or `/fly scope`) draws the real brain and VNC silhouette (male-cns neuropil meshes, brain seen from behind) with every neuron where it sits in the fly (soma, or synapse centroid for sensory neurons), lights the ones spiking, and traces their strongest synapses (orange excitatory, blue inhibitory), with live input drives and decoder readout rates labelled
-- `tools/` — circuit extractor, neuroscope silhouette baker (`scope_shape.py`) + headless bench
+- `tools/` — circuit and whole-connectome extractors, neuroscope silhouette baker (`scope_shape.py`) + headless bench
 
 ## Build
 
@@ -29,6 +29,15 @@ python3 -m venv .venv && .venv/bin/pip install requests numpy scipy
 .venv/bin/python tools/scope_shape.py                         # neuroscope brain outline, ~10 s
 .venv/bin/python tools/bench.py --circuits Circuits/         # all five must PASS
 ```
+
+Whole connectome (`Circuits/male-cns.connectome.gz`, 16.6 MB):
+
+```
+.venv/bin/pip install pyarrow
+.venv/bin/python tools/extract_connectome.py   # 1 GB Janelia export + neuPrint, cached in .cache/; ~2 min cached, longer first time
+```
+
+It writes nothing unless its totals equal neuPrint's own count and every neuron and connection in the circuit JSON matches. The format is documented in the script's docstring.
 
 Circuits are seed types plus bridge interneurons (seed -> x -> seed; `feed` uses two hops, since its one-hop sugar -> MN9 bridges are mostly inhibitory). See the docstring in `tools/extract_circuits.py` for seeds, the side encoding, and neuPrint API quirks.
 
