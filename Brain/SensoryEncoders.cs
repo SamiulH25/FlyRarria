@@ -18,6 +18,14 @@ namespace FlyRarria.Brain
 			return rMax * p / (c + p);
 		}
 
+		/// <summary>
+		/// Sugar GRN gain from hunger (0 full .. 1 starving), as starvation raises
+		/// sugar-neuron sensitivity in real flies. 1.0 at 0.2 (a new bond's default and
+		/// SensoryFrame.Empty), so the bench-verified sugar response is unchanged there;
+		/// a full fly's 0.6 keeps MN9 near silent (tools/bench.py sweep: 0.75 still flickered into FEED).
+		/// </summary>
+		public static double SugarGain(float hunger) => Math.Min(1.5, 0.6 + 2.0 * Math.Clamp(hunger, 0f, 1f));
+
 		public static List<(string type, string side, double hz)> Encode(SensoryFrame f)
 		{
 			var drives = new List<(string, string, double)>();
@@ -39,11 +47,13 @@ namespace FlyRarria.Brain
 			Add("LC11", f.SmallObjectLeft, 100, "L");
 			Add("LC11", f.SmallObjectRight, 100, "R");
 
-			// Taste: contact only.
-			Add("LB3b", f.SugarContact, 120);
-			Add("LB3c", f.SugarContact, 120);
-			Add("PhG1a", f.SugarContact, 100);
-			Add("LgLG3", f.SugarContact, 80);
+			// Taste: contact only. Hunger turns sugar sensing up, satiety turns it down;
+			// whether that is enough to drive MN9 past the feed threshold is the circuit's call.
+			double sweet = SugarGain(f.Hunger);
+			Add("LB3b", f.SugarContact, 120 * sweet);
+			Add("LB3c", f.SugarContact, 120 * sweet);
+			Add("PhG1a", f.SugarContact, 100 * sweet);
+			Add("LgLG3", f.SugarContact, 80 * sweet);
 			Add("LB1a", f.BitterContact, 120);
 			Add("LB1b", f.BitterContact, 120);
 

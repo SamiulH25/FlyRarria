@@ -52,7 +52,11 @@ namespace FlyRarria.Content.Bond
 	public class Bond
 	{
 		public int Xp;
+		/// <summary>Satiety: 100 full, 0 starving (the field and save key keep the name "hunger").</summary>
 		public float Hunger = 80f;
+
+		/// <summary>Hunger drive for the brain: 0 full .. 1 starving.</summary>
+		public float Need => 1f - Hunger / 100f;
 
 		public int Level => Xp >= 900 ? 4 : Xp >= 450 ? 3 : Xp >= 150 ? 2 : 1;
 
@@ -65,7 +69,7 @@ namespace FlyRarria.Content.Bond
 		}
 
 		public void SharedScare() => Xp += 2;
-		public void Tick(float dtMinutes) => Hunger -= dtMinutes * 1.5f;
+		public void Tick(float dtMinutes) => Hunger = BondMath.ClampRef(Hunger - dtMinutes * 1.5f);
 	}
 
 	internal static class BondMath

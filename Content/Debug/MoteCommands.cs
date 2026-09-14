@@ -20,7 +20,7 @@ namespace FlyRarria.Content.Debug
 			int proj = player.ownedProjectileCounts[ModContent.ProjectileType<MoteProjectile>()];
 
 			if (args.Length == 0 || args[0] == "stats") {
-				caller.Reply($"Mote: active={proj} bond=Lv{bond?.Level} xp={bond?.Xp} hunger={bond?.Hunger:F0}");
+				caller.Reply($"Mote: active={proj} bond=Lv{bond?.Level} xp={bond?.Xp} fed={bond?.Hunger:F0}");
 				for (int i = 0; i < Main.maxProjectiles; i++) {
 					var p = Main.projectile[i];
 					if (p.active && p.type == ModContent.ProjectileType<MoteProjectile>() && p.owner == player.whoAmI && p.ModProjectile is MoteProjectile m) {

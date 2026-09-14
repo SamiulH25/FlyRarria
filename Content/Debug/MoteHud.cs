@@ -47,7 +47,7 @@ namespace FlyRarria.Content.Debug
 				}
 			}
 			var bond = BondSystem.Instance?.Get(player);
-			string text = $"mote:{mode} [{drive}] bond:Lv{bond?.Level} hunger:{bond?.Hunger:F0}";
+			string text = $"mote:{mode} [{drive}] bond:Lv{bond?.Level} fed:{bond?.Hunger:F0}";
 			var sb = Main.spriteBatch;
 			var font = FontAssets.MouseText.Value;
 			Vector2 pos = new Vector2(20, Main.screenHeight - 60);

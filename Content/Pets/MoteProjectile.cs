@@ -20,6 +20,7 @@ namespace FlyRarria.Content.Pets
 		private const int BrainEveryTicks = 3;
 		private const float FollowSpeed = 7f;
 		private const float TeleportTiles = 25f;
+		private const int MealCooldownBrainTicks = 10 * 60 / BrainEveryTicks; // ~10s; _feedCd counts brain ticks
 
 		private LifNetwork _net;
 		private PopulationIndex _pops;
@@ -28,6 +29,8 @@ namespace FlyRarria.Content.Pets
 		private int _tick;
 		private bool _brainLoaded;
 		private int _feedCd;
+		private float _damageFlash;
+		private int _lastLife = -1;
 
 		public MoteMode CurrentMode => _cmd.Mode;
 		public bool BrainReflex => _cmd.Reflex;
@@ -139,7 +142,44 @@ namespace FlyRarria.Content.Pets
 			ScanFood(player, ref f);
 			f.SocialCue = CountCompany(player) > 0 ? 0.6f : 0f;
 			f.Heat = player.HasBuff(BuffID.Burning) || player.HasBuff(BuffID.OnFire) ? 1f : 0f;
+			ScanSmallObjects(ref f);
+
+			// Owner hurt: a bristle flash that fades over ~0.5s.
+			if (_lastLife >= 0 && player.statLife < _lastLife) {
+				_damageFlash = 1f;
+			}
+			else {
+				_damageFlash *= 0.75f;
+			}
+			_lastLife = player.statLife;
+			f.DamageFlash = _damageFlash;
+
+			// Interoception: the bond's hunger scales sugar sensing (SensoryEncoders.SugarGain).
+			f.Hunger = BondSystem.Instance?.Get(player).Need ?? SensoryFrame.Empty.Hunger;
 			return f;
+		}
+
+		private void ScanSmallObjects(ref SensoryFrame f)
+		{
+			// Small moving things (critters, bees, ...) are LC11's preferred stimulus.
+			for (int i = 0; i < Main.maxNPCs; i++) {
+				NPC npc = Main.npc[i];
+				if (!npc.active || npc.width > 24 || npc.height > 24) {
+					continue;
+				}
+				Vector2 d = npc.Center - Projectile.Center;
+				float dist = d.Length();
+				if (dist > 320) {
+					continue;
+				}
+				float s = MathHelper.Clamp(npc.velocity.Length() / 3f, 0f, 1f) * (1f - dist / 320f);
+				if (d.X < 0) {
+					f.SmallObjectLeft = MathHelper.Max(f.SmallObjectLeft, s);
+				}
+				else {
+					f.SmallObjectRight = MathHelper.Max(f.SmallObjectRight, s);
+				}
+			}
 		}
 
 		private void ScanFood(Player player, ref SensoryFrame f)
@@ -210,24 +250,25 @@ namespace FlyRarria.Content.Pets
 
 		private void TendBond(Player player, SensoryFrame frame)
 		{
-			if (--_feedCd > 0) {
-				return;
-			}
 			var bond = BondSystem.Instance?.Get(player);
 			if (bond == null) {
 				return;
 			}
+			bond.Tick(BrainEveryTicks / 3600f); // game ticks -> real-time minutes
+			if (--_feedCd > 0) {
+				return;
+			}
 			if (frame.SugarContact > 0.5f && _cmd.Mode == MoteMode.Feed) {
 				bond.Feed(sweet: true);
-				_feedCd = 600; // ~10s between counted meals
+				_feedCd = MealCooldownBrainTicks;
 			}
 			else if (frame.BitterContact > 0.5f) {
 				bond.Feed(sweet: false);
-				_feedCd = 600;
+				_feedCd = MealCooldownBrainTicks;
 			}
 			else if (_cmd.Mode == MoteMode.Escape) {
 				bond.SharedScare();
-				_feedCd = 600;
+				_feedCd = MealCooldownBrainTicks;
 			}
 		}
 
@@ -250,6 +291,7 @@ namespace FlyRarria.Content.Pets
 			}
 
 			Vector2 desired = Vector2.Zero;
+			float response = 0.12f;
 			switch (_cmd.Mode) {
 				case MoteMode.Escape: {
 					Vector2 away = Projectile.Center - player.Center;
@@ -259,14 +301,23 @@ namespace FlyRarria.Content.Pets
 					desired = Vector2.Normalize(away + new Vector2(_cmd.Yaw * 40, -60)) * (FollowSpeed * 1.8f);
 					break;
 				}
+				case MoteMode.Startle:
+					// Looming seen but no giant-fiber takeoff: freeze in place.
+					response = 0.35f;
+					break;
 				case MoteMode.Feed:
 				case MoteMode.Groom:
 				case MoteMode.Song:
 					desired = toPlayer * 0.02f;
 					break;
 				default: {
-					if (dist > 96) {
-						desired = Vector2.Normalize(toPlayer) * FollowSpeed;
+					if (_cmd.Forward < 0 && dist > 1) {
+						// MDN backward walking: back away from the owner.
+						desired = -Vector2.Normalize(toPlayer) * 3f;
+					}
+					else if (dist > 96) {
+						// DNp09/DNg100 forward drive speeds up the approach.
+						desired = Vector2.Normalize(toPlayer) * FollowSpeed * (_cmd.Forward > 0 ? 1.3f : 1f);
 					}
 					else if (dist < 48) {
 						desired = -Vector2.Normalize(toPlayer) * 2f;
@@ -278,7 +329,7 @@ namespace FlyRarria.Content.Pets
 				}
 			}
 
-			Projectile.velocity = Vector2.Lerp(Projectile.velocity, desired, 0.12f);
+			Projectile.velocity = Vector2.Lerp(Projectile.velocity, desired, response);
 			if (BondSystem.Instance?.IsAsleep(player) == true) {
 				Projectile.velocity *= 0.9f;
 			}
