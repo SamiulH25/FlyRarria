@@ -21,3 +21,5 @@ Thumbs.db
 
 # mise (keep mise.toml, ignore installs)
 .mise/
+__pycache__/
+*.pyc
