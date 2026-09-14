@@ -1,0 +1,15 @@
+{
+ "dataset": "male-cns:v1.0",
+ "circuit": "groom",
+ "min_weight": 5,
+ "seed_types": [
+  "DNg62",
+  "DNge078",
+  "DNg12",
+  "DNg11",
+  "DNp29"
+ ],
+ "format": "flyraria-circuit-v1",
+ "neurons": [],
+ "edges": []
+}

@@ -1,0 +1,23 @@
+# .NET / tModLoader
+bin/
+obj/
+.vs/
+.idea/
+*.user
+*.suo
+
+# tModLoader local dev
+tModLoader/
+ModLoader/
+*.tmod
+
+# Circuit raw fetches (large, regenerable)
+/Circuits/raw/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*~
+
+# mise (keep mise.toml, ignore installs)
+.mise/

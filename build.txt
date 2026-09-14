@@ -1,0 +1,8 @@
+author = FlyRarria
+displayName = FlyRarria
+homepage = https://github.com/FlyRarria/FlyRarria
+hideCode = false
+hideResources = false
+includeSource = true
+buildIgnore = *.csproj, *.user, obj\*, bin\*, .vs\*, .idea\*, Circuits/raw\*
+version = 0.1.0

@@ -1,0 +1,10 @@
+A living Terraria companion driven by real fruit-fly brain circuits.
+
+A small mote follows you, gets hungry, startles at danger, grooms in the rain,
+and dances when it trusts you. Its decisions come from extracted Drosophila
+sensorimotor circuits (escape, steering, feeding, grooming, song) simulated as
+leaky integrate-and-fire neurons — not from scripted AI.
+
+Early scaffold (v0.1.0): pet follows/teleports, samples the world into a
+SensoryFrame, steps the LIF circuits inline, and decodes descending-neuron
+activity into movement. Full circuit data lands via tools/extract_circuits.py.

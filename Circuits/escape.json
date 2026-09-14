@@ -1,0 +1,18 @@
+{
+ "dataset": "male-cns:v1.0",
+ "circuit": "escape",
+ "min_weight": 5,
+ "seed_types": [
+  "LC4",
+  "LPLC2",
+  "LPLC1",
+  "DNp01",
+  "DNp02",
+  "DNp11",
+  "PSI",
+  "TTMn"
+ ],
+ "format": "flyraria-circuit-v1",
+ "neurons": [],
+ "edges": []
+}

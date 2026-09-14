@@ -1,0 +1,13 @@
+{
+ "dataset": "male-cns:v1.0",
+ "circuit": "song",
+ "min_weight": 5,
+ "seed_types": [
+  "pC1",
+  "pIP10",
+  "pMP2"
+ ],
+ "format": "flyraria-circuit-v1",
+ "neurons": [],
+ "edges": []
+}

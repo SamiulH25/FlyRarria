@@ -1,0 +1,19 @@
+{
+ "dataset": "male-cns:v1.0",
+ "circuit": "feed",
+ "min_weight": 5,
+ "seed_types": [
+  "LB3b",
+  "LB3c",
+  "PhG1a",
+  "LgLG3",
+  "LB1a",
+  "GNG232",
+  "DNg67",
+  "MN9",
+  "GNG087"
+ ],
+ "format": "flyraria-circuit-v1",
+ "neurons": [],
+ "edges": []
+}

@@ -1,0 +1,12 @@
+{
+ "dataset": "male-cns:v1.0",
+ "circuit": "steer",
+ "min_weight": 5,
+ "seed_types": [
+  "DNa01",
+  "DNa02"
+ ],
+ "format": "flyraria-circuit-v1",
+ "neurons": [],
+ "edges": []
+}
