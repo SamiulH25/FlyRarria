@@ -26,6 +26,8 @@ namespace FlyRarria.Content.Pets
 		private MotorDecoder _decoder;
 		private MotorCommand _cmd;
 		private int _tick;
+		private bool _brainLoaded;
+		private int _feedCd;
 
 		public MoteMode CurrentMode => _cmd.Mode;
 		public bool BrainReflex => _cmd.Reflex;
@@ -63,28 +65,29 @@ namespace FlyRarria.Content.Pets
 				var drives = SensoryEncoders.Encode(frame);
 				SensoryEncoders.Apply(_net, _pops, drives);
 				_net.Step(100); // 100 x 0.5ms = 50ms brain time
-				_cmd = _decoder.Decode(brainDriven: _pops != null && CircuitDataPresent);
+				_cmd = _decoder.Decode(brainDriven: _brainLoaded);
+				TendBond(player, frame);
 			}
 
 			Steer(player);
 			Animate();
 		}
 
-		private bool CircuitDataPresent => _net != null && _pops != null;
-
 		private void EnsureBrain()
 		{
 			if (_net != null) {
 				return;
 			}
-			// Empty graph until tools/extract_circuits.py output is embedded.
-			// The pet remains a working follower; scope HUD reports [reflex].
-			var empty = new Connectome(0, new int[0], new int[0], new ushort[0],
+			// Real circuit data when embedded (Circuits/*.json); otherwise an empty
+			// graph so the pet stays a working follower and the HUD reports [reflex].
+			Connectome graph = CircuitLoader.TryLoadAll();
+			_brainLoaded = graph != null;
+			graph ??= new Connectome(0, new int[0], new int[0], new ushort[0],
 				new sbyte[0], new string[0], new int[0], new double[0], new double[0]);
-			_net = new LifNetwork(empty, 0.5, LifNetwork.Params.Shiu2024());
-			_pops = new PopulationIndex(empty);
+			_net = new LifNetwork(graph, 0.5, LifNetwork.Params.Shiu2024());
+			_pops = new PopulationIndex(graph);
 			_decoder = new MotorDecoder(_net, _pops, MotorDecoder.Thresholds.Default);
-			_cmd = new MotorCommand { Mode = MoteMode.Follow, Reflex = true };
+			_cmd = new MotorCommand { Mode = MoteMode.Follow, Reflex = !_brainLoaded };
 		}
 
 		private SensoryFrame SampleWorld(Player player)
@@ -129,12 +132,104 @@ namespace FlyRarria.Content.Pets
 			else {
 				f.LoomRight = worst;
 			}
-
 			f.WindLeft = MathHelper.Clamp(-Projectile.velocity.X / 12f, 0f, 1f);
 			f.WindRight = MathHelper.Clamp(Projectile.velocity.X / 12f, 0f, 1f);
 			f.LightLevel = Lighting.Brightness((int)(Projectile.Center.X / 16), (int)(Projectile.Center.Y / 16));
 			f.Touch = Main.raining ? 0.4f : 0f;
+			ScanFood(player, ref f);
+			f.SocialCue = CountCompany(player) > 0 ? 0.6f : 0f;
+			f.Heat = player.HasBuff(BuffID.Burning) || player.HasBuff(BuffID.OnFire) ? 1f : 0f;
 			return f;
+		}
+
+		private void ScanFood(Player player, ref SensoryFrame f)
+		{
+			// Dropped items near the mote: smell in a wide radius, taste on contact.
+			for (int i = 0; i < Main.maxItems; i++) {
+				Item item = Main.item[i];
+				if (!item.active || item.stack <= 0) {
+					continue;
+				}
+				float d = Vector2.Distance(item.Center, Projectile.Center);
+				if (IsSweet(item) && d < 16 * 16) {
+					f.FoodSmell = MathHelper.Max(f.FoodSmell, 1f - d / (16 * 16));
+				}
+				if (d < 40) {
+					if (IsSweet(item)) {
+						f.SugarContact = 1f;
+					}
+					if (IsBitter(item)) {
+						f.BitterContact = 1f;
+					}
+				}
+			}
+			// Hand-fed: player holding food close to the mote offers a taste.
+			Item held = player.HeldItem;
+			if (held != null && held.stack > 0
+				&& Vector2.Distance(player.Center, Projectile.Center) < 160) {
+				if (IsSweet(held)) {
+					f.SugarContact = MathHelper.Max(f.SugarContact, 0.7f);
+					f.FoodSmell = MathHelper.Max(f.FoodSmell, 0.5f);
+				}
+				if (IsBitter(held)) {
+					f.BitterContact = 1f;
+				}
+			}
+		}
+
+		private static bool IsSweet(Item item)
+		{
+			if (item.healLife > 0) {
+				return true;
+			}
+			return item.buffType == BuffID.WellFed
+				|| item.buffType == BuffID.PlentySatisfied
+				|| item.buffType == BuffID.ExquisitelyStuffed;
+		}
+
+		private static bool IsBitter(Item item)
+		{
+			return item.type == ItemID.RottenChunk
+				|| item.type == ItemID.Vertebrae
+				|| item.type == ItemID.Stinger
+				|| item.type == ItemID.SpiderFang
+				|| item.type == ItemID.Pufferfish;
+		}
+
+		private static int CountCompany(Player player)
+		{
+			int n = 0;
+			for (int i = 0; i < Main.maxPlayers; i++) {
+				Player p = Main.player[i];
+				if (p.active && !p.dead && i != player.whoAmI
+					&& Vector2.Distance(p.Center, player.Center) < 25 * 16) {
+					n++;
+				}
+			}
+			return n;
+		}
+
+		private void TendBond(Player player, SensoryFrame frame)
+		{
+			if (--_feedCd > 0) {
+				return;
+			}
+			var bond = BondSystem.Instance?.Get(player);
+			if (bond == null) {
+				return;
+			}
+			if (frame.SugarContact > 0.5f && _cmd.Mode == MoteMode.Feed) {
+				bond.Feed(sweet: true);
+				_feedCd = 600; // ~10s between counted meals
+			}
+			else if (frame.BitterContact > 0.5f) {
+				bond.Feed(sweet: false);
+				_feedCd = 600;
+			}
+			else if (_cmd.Mode == MoteMode.Escape) {
+				bond.SharedScare();
+				_feedCd = 600;
+			}
 		}
 
 		private void Steer(Player player)
@@ -145,6 +240,13 @@ namespace FlyRarria.Content.Pets
 			if (dist > TeleportTiles * 16) {
 				Projectile.Center = player.Center + new Vector2(0, -48);
 				Projectile.velocity = Vector2.Zero;
+				return;
+			}
+			// Bond-4 nights: perch on the owner's head instead of hovering.
+			if (BondSystem.Instance?.IsAsleep(player) == true && dist < 30 * 16) {
+				_cmd.Mode = MoteMode.Sleep;
+				Vector2 perch = player.Center + new Vector2(0, -46);
+				Projectile.velocity = Vector2.Lerp(Projectile.velocity, (perch - Projectile.Center) * 0.2f, 0.2f);
 				return;
 			}
 

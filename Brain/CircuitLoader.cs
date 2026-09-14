@@ -1,0 +1,100 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Reflection;
+using System.Text.Json;
+
+namespace FlyRarria.Brain
+{
+	/// <summary>
+	/// Loads tools/extract_circuits.py output (flyraria-circuit-v1 JSON) into a
+	/// merged Connectome. Returns null when no circuit data is embedded yet —
+	/// callers must keep the documented [reflex] fallback in that case.
+	/// </summary>
+	public static class CircuitLoader
+	{
+		private static readonly string[] Circuits = { "escape", "steer", "feed", "groom", "song" };
+
+		public static bool TriedLoad { get; private set; }
+		public static string LoadNote { get; private set; } = "circuit data not loaded";
+
+		public static Connectome TryLoadAll()
+		{
+			TriedLoad = true;
+			var neurons = new List<(int body, string type, string nt, double x, double y)>();
+			var edges = new List<(int pre, int post, int count)>();
+			var asm = Assembly.GetExecutingAssembly();
+
+			foreach (string name in Circuits) {
+				string resource = $"FlyRarria.Circuits.{name}.json";
+				using Stream s = asm.GetManifestResourceStream(resource);
+				if (s == null) {
+					continue;
+				}
+				using var doc = JsonDocument.Parse(s);
+				var root = doc.RootElement;
+				if (root.GetProperty("format").GetString() != "flyraria-circuit-v1") {
+					continue;
+				}
+				var indexByBody = new Dictionary<long, int>();
+				foreach (var n in root.GetProperty("neurons").EnumerateArray()) {
+					long body = n.GetProperty("body").GetInt64();
+					if (indexByBody.ContainsKey(body)) {
+						continue;
+					}
+					indexByBody[body] = neurons.Count;
+					neurons.Add((
+						(int)body,
+						n.GetProperty("type").GetString() ?? "?",
+						n.TryGetProperty("nt", out var nt) ? nt.GetString() ?? "" : "",
+						n.TryGetProperty("x", out var x) ? x.GetDouble() : 0,
+						n.TryGetProperty("y", out var y) ? y.GetDouble() : 0));
+				}
+				foreach (var e in root.GetProperty("edges").EnumerateArray()) {
+					edges.Add((indexByBody[e[0].GetInt64()], indexByBody[e[1].GetInt64()], e[2].GetInt32()));
+				}
+			}
+
+			if (neurons.Count == 0) {
+				LoadNote = "no embedded Circuits/*.json with neurons — running [reflex] fallback";
+				return null;
+			}
+
+			int nCount = neurons.Count;
+			var rowCounts = new int[nCount];
+			foreach (var (pre, _, _) in edges) {
+				rowCounts[pre]++;
+			}
+			var rowStart = new int[nCount];
+			int acc = 0;
+			for (int i = 0; i < nCount; i++) {
+				rowStart[i] = acc;
+				acc += rowCounts[i];
+			}
+			var targets = new int[edges.Count];
+			var counts = new ushort[edges.Count];
+			var filled = new int[nCount];
+			foreach (var (pre, post, c) in edges) {
+				int slot = rowStart[pre] + filled[pre]++;
+				targets[slot] = post;
+				counts[slot] = (ushort)Math.Min(c, ushort.MaxValue);
+			}
+
+			var signs = new sbyte[nCount];
+			var types = new string[nCount];
+			var bodies = new int[nCount];
+			var xs = new double[nCount];
+			var ys = new double[nCount];
+			for (int i = 0; i < nCount; i++) {
+				signs[i] = Connectome.SignForTransmitter(neurons[i].nt);
+				types[i] = neurons[i].type;
+				bodies[i] = neurons[i].body;
+				xs[i] = neurons[i].x;
+				ys[i] = neurons[i].y;
+			}
+
+			LoadNote = $"{nCount} neurons, {edges.Count} edges from embedded circuits";
+			return new Connectome(nCount, rowStart, targets, counts, signs, types, bodies, xs, ys);
+		}
+	}
+}
