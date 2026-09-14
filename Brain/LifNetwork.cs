@@ -8,8 +8,14 @@ namespace FlyRarria.Brain
 	/// tau_m dv/dt = (v_rest - v) + g; tau_s dg/dt = -g;
 	/// presynaptic spike (after delay): g += sign * N * weightMv * gain.
 	/// Silent unless driven: no spontaneous activity, every spike traces to a stimulus.
-	/// Sized for extracted circuits (hundreds to low thousands of neurons), so a
-	/// straightforward dense-state loop is fast enough to step inline on the game tick.
+	///
+	/// Event-driven so a whole CNS (176k neurons) fits the game tick. Each step only
+	/// touches awake neurons: stimulated, refractory, or with max(v - rest, g) at or above
+	/// threshold - rest. Anything else can't reach threshold without new input (each step
+	/// v - rest becomes a blend of itself and g, and g only decays, so it never exceeds the
+	/// larger of the two), so it sleeps, and its next input first catches it up with the
+	/// closed form of the same per-step update. Same spikes as stepping every neuron.
+	/// Not thread-safe: one thread at a time may call into it.
 	/// </summary>
 	public sealed class LifNetwork
 	{
@@ -36,101 +42,250 @@ namespace FlyRarria.Brain
 			};
 		}
 
+		/// <summary>
+		/// Everything a synaptic delivery touches, packed together: deliveries land on
+		/// random neurons, so each one costs a single cache line instead of one per array.
+		/// </summary>
+		private struct Cell
+		{
+			public double V;
+			public double G;
+			public double RefractoryLeft;
+			/// <summary>While asleep, V and G are as of the start of this step.</summary>
+			public int SyncStep;
+			public bool Awake;
+			/// <summary>Has a Poisson rate (in <see cref="_poissonHz"/>) and a place in <see cref="_stimulated"/>.</summary>
+			public bool Stimulated;
+		}
+
+		/// <summary>A neuron asleep this many steps (4 s at 0.5 ms) has decayed to rest in double precision.</summary>
+		private const int CatchUpSteps = 8192;
+		/// <summary>Rates below this are zeroed so the estimate list stays short (and out of denormals).</summary>
+		private const double RateFloorHz = 1e-9;
+
 		private readonly Connectome _graph;
 		private readonly Params _p;
-		private readonly double[] _v;
-		private readonly double[] _g;
-		private readonly double[] _refractoryLeft;
+		private readonly Cell[] _cells;
 		private readonly double[] _poissonHz;
-		private readonly Queue<(int target, double dg, int dueStep)> _delayed;
-		private readonly List<int> _spikesThisTick = new List<int>();
 		private readonly int[] _windowSpikes;
 		private readonly double[] _rateEma;
-		private readonly Random _rng = new Random();
+		private readonly bool[] _isRated;
+		private readonly Random _rng;
 		private int _step;
+
+		private readonly double _decayV;
+		private readonly double _decayG;
+		private readonly double _stepSec;
+		private readonly int _delaySteps;
+		/// <summary>Sleep once max(v - rest, g) is below this (threshold - rest, less rounding slack).</summary>
+		private readonly double _sleepBelowMv;
+		// k input-free steps: v - rest -> _powV[k] (v - rest) + _gToV[k] g, g -> _powG[k] g.
+		private readonly double[] _powV;
+		private readonly double[] _powG;
+		private readonly double[] _gToV;
+
+		// Neurons stepped this step, each once (Cell.Awake).
+		private readonly int[] _active;
+		private int _activeCount;
+		// Stimulated neurons in index order, so Poisson draws come in a fixed order.
+		private readonly List<int> _stimulated = new List<int>();
+		private bool _stimulatedDirty;
+		// Neurons that spiked, waiting out the synaptic delay: a ring of one bucket per step.
+		private readonly List<int>[] _pending;
+		private readonly List<int> _spikesThisTick = new List<int>();
+		// Neurons with a nonzero rate estimate.
+		private readonly List<int> _rated = new List<int>();
 
 		public double DtMs { get; }
 		/// <summary>Every spike during the last <see cref="Step"/> call (a neuron may repeat).</summary>
 		public IReadOnlyList<int> SpikesThisTick => _spikesThisTick;
+		/// <summary>Neurons stepped at the end of the last step; the rest were asleep.</summary>
+		public int AwakeCount => _activeCount;
 
-		public LifNetwork(Connectome graph, double dtMs, Params p)
+		public LifNetwork(Connectome graph, double dtMs, Params p, int? seed = null)
 		{
 			_graph = graph;
 			_p = p;
 			DtMs = dtMs;
-			_v = new double[graph.NeuronCount];
-			_g = new double[graph.NeuronCount];
-			_refractoryLeft = new double[graph.NeuronCount];
-			_poissonHz = new double[graph.NeuronCount];
-			_windowSpikes = new int[graph.NeuronCount];
-			_rateEma = new double[graph.NeuronCount];
-			_delayed = new Queue<(int, double, int)>();
+			_rng = seed.HasValue ? new Random(seed.Value) : new Random();
+			int n = graph.NeuronCount;
+			_cells = new Cell[n];
+			_poissonHz = new double[n];
+			_windowSpikes = new int[n];
+			_rateEma = new double[n];
+			_isRated = new bool[n];
+			_active = new int[n];
+
+			_decayV = Math.Exp(-dtMs / p.TauMms);
+			_decayG = Math.Exp(-dtMs / p.TauSms);
+			_stepSec = dtMs / 1000.0;
+			_delaySteps = Math.Max(1, (int)Math.Round(p.DelayMs / dtMs));
+			_sleepBelowMv = p.ThresholdMv - p.RestMv - 1e-6;
+			_pending = new List<int>[_delaySteps];
+			for (int i = 0; i < _delaySteps; i++) {
+				_pending[i] = new List<int>();
+			}
+
+			_powV = new double[CatchUpSteps];
+			_powG = new double[CatchUpSteps];
+			_gToV = new double[CatchUpSteps];
+			_powV[0] = 1;
+			_powG[0] = 1;
+			for (int k = 1; k < CatchUpSteps; k++) {
+				_powV[k] = _powV[k - 1] * _decayV;
+				_powG[k] = _powG[k - 1] * _decayG;
+				_gToV[k] = _gToV[k - 1] * _decayV + _powG[k - 1] * (1.0 - _decayV);
+			}
 			Reset();
 		}
 
 		public void Reset()
 		{
-			for (int i = 0; i < _graph.NeuronCount; i++) {
-				_v[i] = _p.RestMv;
-				_g[i] = 0;
-				_refractoryLeft[i] = 0;
-				_poissonHz[i] = 0;
-				_rateEma[i] = 0;
+			Array.Clear(_cells);
+			for (int i = 0; i < _cells.Length; i++) {
+				_cells[i].V = _p.RestMv;
 			}
-			_delayed.Clear();
+			Array.Clear(_poissonHz);
+			Array.Clear(_windowSpikes);
+			Array.Clear(_rateEma);
+			Array.Clear(_isRated);
+			_activeCount = 0;
+			_stimulated.Clear();
+			_stimulatedDirty = false;
+			foreach (var bucket in _pending) {
+				bucket.Clear();
+			}
+			_rated.Clear();
+			_spikesThisTick.Clear();
 			_step = 0;
 		}
 
-		public void SetStimulusRate(int neuron, double hz) => _poissonHz[neuron] = hz;
+		public void SetStimulusRate(int neuron, double hz)
+		{
+			ref Cell c = ref _cells[neuron];
+			bool now = hz > 0;
+			_poissonHz[neuron] = hz;
+			if (now == c.Stimulated) {
+				return;
+			}
+			c.Stimulated = now;
+			_stimulatedDirty = true;
+			if (now) {
+				_stimulated.Add(neuron);
+				Wake(ref c, neuron);
+			}
+		}
 
-		public void ClearStimuli() => Array.Clear(_poissonHz, 0, _poissonHz.Length);
+		public void ClearStimuli()
+		{
+			// Only SetStimulusRate writes rates, so the list covers every nonzero one.
+			// The neurons stay awake and fall asleep on their own.
+			foreach (int i in _stimulated) {
+				_poissonHz[i] = 0;
+				_cells[i].Stimulated = false;
+			}
+			_stimulated.Clear();
+			_stimulatedDirty = false;
+		}
 
 		/// <summary>Advance <paramref name="steps"/> integration steps and update the rate estimates.</summary>
 		public void Step(int steps)
 		{
 			_spikesThisTick.Clear();
-			double decayV = Math.Exp(-DtMs / _p.TauMms);
-			double decayG = Math.Exp(-DtMs / _p.TauSms);
-			int delaySteps = Math.Max(1, (int)Math.Round(_p.DelayMs / DtMs));
-			double stepSec = DtMs / 1000.0;
+			if (_stimulatedDirty) {
+				_stimulated.Sort();
+				int kept = 0;
+				for (int k = 0; k < _stimulated.Count; k++) {
+					int i = _stimulated[k];
+					if (_cells[i].Stimulated && (kept == 0 || _stimulated[kept - 1] != i)) {
+						_stimulated[kept++] = i;
+					}
+				}
+				_stimulated.RemoveRange(kept, _stimulated.Count - kept);
+				_stimulatedDirty = false;
+			}
+
+			Cell[] cells = _cells;
+			int[] rowStart = _graph.RowStart;
+			int[] targets = _graph.Targets;
+			ushort[] counts = _graph.SynapseCounts;
+			sbyte[] signs = _graph.Signs;
+			int neuronCount = _graph.NeuronCount;
+			double restMv = _p.RestMv;
 
 			for (int s = 0; s < steps; s++, _step++) {
-				// Deliver due synaptic input.
-				while (_delayed.Count > 0 && _delayed.Peek().dueStep <= _step) {
-					var (target, dg, _) = _delayed.Dequeue();
-					_g[target] += dg;
+				// Deliver due synaptic input, catching sleeping targets up first.
+				var due = _pending[_step % _delaySteps];
+				foreach (int pre in due) {
+					double dv = signs[pre] * _p.WeightMvPerSynapse * _p.Gain;
+					int rowEnd = pre + 1 < neuronCount ? rowStart[pre + 1] : targets.Length;
+					for (int e = rowStart[pre]; e < rowEnd; e++) {
+						int target = targets[e];
+						ref Cell c = ref cells[target];
+						if (!c.Awake) {
+							Wake(ref c, target);
+						}
+						c.G += dv * counts[e];
+					}
+				}
+				due.Clear();
+
+				// Poisson sensory drive (as in the paper), drawn in index order.
+				foreach (int i in _stimulated) {
+					ref Cell c = ref cells[i];
+					if (_rng.NextDouble() < _poissonHz[i] * _stepSec) {
+						Fire(ref c, i);
+					}
+					else {
+						Integrate(ref c, i);
+					}
 				}
 
-				for (int i = 0; i < _graph.NeuronCount; i++) {
-					// Poisson sensory drive (as in the paper).
-					if (_poissonHz[i] > 0 && _rng.NextDouble() < _poissonHz[i] * stepSec) {
-						Fire(i, delaySteps);
+				int awake = 0;
+				for (int a = 0; a < _activeCount; a++) {
+					int i = _active[a];
+					ref Cell c = ref cells[i];
+					if (c.Stimulated) {
+						_active[awake++] = i; // already stepped above
 						continue;
 					}
-					if (_refractoryLeft[i] > 0) {
-						_refractoryLeft[i] -= DtMs;
-						continue;
+					Integrate(ref c, i);
+					if (c.RefractoryLeft > 0 || Math.Max(c.V - restMv, c.G) >= _sleepBelowMv) {
+						_active[awake++] = i;
 					}
-					_v[i] = _p.RestMv + (_v[i] - _p.RestMv) * decayV + _g[i] * (1.0 - decayV);
-					_g[i] *= decayG;
-					if (_v[i] >= _p.ThresholdMv) {
-						Fire(i, delaySteps);
+					else {
+						c.Awake = false;
+						c.SyncStep = _step + 1;
 					}
 				}
+				_activeCount = awake;
 			}
 
 			// EMA of each neuron's rate over this window. Counts every spike in the
 			// window, so rates are real Hz like tools/bench.py and the decoder thresholds.
 			double alpha = 1.0 - Math.Exp(-steps * DtMs / 150.0);
-			double windowSec = steps * stepSec;
-			Array.Clear(_windowSpikes, 0, _windowSpikes.Length);
+			double windowSec = steps * _stepSec;
 			foreach (int i in _spikesThisTick) {
-				_windowSpikes[i]++;
+				if (_windowSpikes[i]++ == 0 && !_isRated[i]) {
+					_isRated[i] = true;
+					_rated.Add(i);
+				}
 			}
-			for (int i = 0; i < _graph.NeuronCount; i++) {
+			int stillRated = 0;
+			for (int r = 0; r < _rated.Count; r++) {
+				int i = _rated[r];
 				double inst = _windowSpikes[i] / windowSec;
+				_windowSpikes[i] = 0;
 				_rateEma[i] += alpha * (inst - _rateEma[i]);
+				if (_rateEma[i] < RateFloorHz) {
+					_rateEma[i] = 0;
+					_isRated[i] = false;
+				}
+				else {
+					_rated[stillRated++] = i;
+				}
 			}
+			_rated.RemoveRange(stillRated, _rated.Count - stillRated);
 		}
 
 		public double RateHz(int neuron) => _rateEma[neuron];
@@ -147,17 +302,45 @@ namespace FlyRarria.Brain
 			return sum / population.Length;
 		}
 
-		private void Fire(int i, int delaySteps)
+		private void Integrate(ref Cell c, int i)
 		{
-			_v[i] = _p.RestMv;
-			_g[i] = 0;
-			_refractoryLeft[i] = _p.RefractoryMs;
-			_spikesThisTick.Add(i);
-			double dv = _graph.Signs[i] * _p.WeightMvPerSynapse * _p.Gain;
-			int rowEnd = i + 1 < _graph.NeuronCount ? _graph.RowStart[i + 1] : _graph.Targets.Length;
-			for (int e = _graph.RowStart[i]; e < rowEnd; e++) {
-				_delayed.Enqueue((_graph.Targets[e], dv * _graph.SynapseCounts[e], _step + delaySteps));
+			if (c.RefractoryLeft > 0) {
+				c.RefractoryLeft -= DtMs;
+				return;
 			}
+			c.V = _p.RestMv + (c.V - _p.RestMv) * _decayV + c.G * (1.0 - _decayV);
+			c.G *= _decayG;
+			if (c.V >= _p.ThresholdMv) {
+				Fire(ref c, i);
+			}
+		}
+
+		private void Wake(ref Cell c, int i)
+		{
+			if (c.Awake) {
+				return;
+			}
+			int k = _step - c.SyncStep;
+			if (k >= CatchUpSteps) {
+				c.V = _p.RestMv;
+				c.G = 0;
+			}
+			else if (k > 0) {
+				c.V = _p.RestMv + _powV[k] * (c.V - _p.RestMv) + _gToV[k] * c.G;
+				c.G *= _powG[k];
+			}
+			c.Awake = true;
+			_active[_activeCount++] = i;
+		}
+
+		private void Fire(ref Cell c, int i)
+		{
+			c.V = _p.RestMv;
+			c.G = 0;
+			c.RefractoryLeft = _p.RefractoryMs;
+			_spikesThisTick.Add(i);
+			// Delivered _delaySteps from now, which is this same ring slot.
+			_pending[_step % _delaySteps].Add(i);
 		}
 	}
 }

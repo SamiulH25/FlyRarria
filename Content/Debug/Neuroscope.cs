@@ -20,7 +20,7 @@ namespace FlyRarria.Content.Debug
 	/// Neurons that spiked in the latest brain step glow, and their strongest outgoing
 	/// synapses flash as lines, orange excitatory and blue inhibitory. Labels show the
 	/// live sensory drives and readout rates. Everything drawn comes from
-	/// LifNetwork.SpikesThisTick, so nothing lights up without real spikes.
+	/// MoteProjectile.LastSpikes, so nothing lights up without real spikes.
 	/// </summary>
 	public class Neuroscope : ModSystem
 	{
@@ -118,8 +118,8 @@ namespace FlyRarria.Content.Debug
 				return;
 			}
 			_lastBrainTick = m.BrainTicks;
-			var spikes = m.Net.SpikesThisTick;
-			_spikeCount = spikes.Count;
+			int[] spikes = m.LastSpikes;
+			_spikeCount = spikes.Length;
 			int[] top = _layout.TopEdges;
 			foreach (int i in spikes) {
 				_glow[i] = 1f;

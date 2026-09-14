@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 using Microsoft.Xna.Framework;
 using Terraria;
 using Terraria.ID;
@@ -11,7 +13,7 @@ namespace FlyRarria.Content.Pets
 	/// <summary>
 	/// The companion. Vanilla pet shell (follow/teleport/keepalive) with the brain
 	/// in the decision seat: every 3rd tick the world is sampled into a SensoryFrame,
-	/// the LIF circuits step 50ms, and the decoded command steers velocity.
+	/// the LIF circuits step 50ms on a worker thread, and the decoded command steers velocity.
 	/// Until circuit data ships (Circuits/*.json), the brain resolves no populations
 	/// and the decoder reports Idle/Reflex — the pet then falls back to plain
 	/// following so it is still a working pet. No fake brain activity is ever shown.
@@ -27,7 +29,12 @@ namespace FlyRarria.Content.Pets
 		private PopulationIndex _pops;
 		private MotorDecoder _decoder;
 		private MotorCommand _cmd;
-		private int _tick;
+		private int _ticksSinceBrainStart = BrainEveryTicks - 1;
+		/// <summary>The brain step running on a worker thread, or null while the network is idle.</summary>
+		private Task _brainStep;
+		private SensoryFrame _stepFrame;
+		private List<(string type, string side, double hz)> _stepDrives;
+		private int _stepGameTicks;
 		private bool _brainLoaded;
 		private int _feedCd;
 		private float _damageFlash;
@@ -37,10 +44,16 @@ namespace FlyRarria.Content.Pets
 		public bool BrainReflex => _cmd.Reflex;
 		/// <summary>The loaded circuit graph, or null while running the [reflex] fallback.</summary>
 		public Connectome Graph { get; private set; }
+		/// <summary>
+		/// The live network. It steps on a worker thread, so read <see cref="LastSpikes"/> rather
+		/// than its spike list; its rates are only written at the end of a step and are fine to display.
+		/// </summary>
 		public LifNetwork Net => _net;
 		public PopulationIndex Pops => _pops;
-		/// <summary>Brain steps so far; Net.SpikesThisTick belongs to the latest one.</summary>
+		/// <summary>Brain steps finished so far; LastSpikes belongs to the latest one.</summary>
 		public int BrainTicks { get; private set; }
+		/// <summary>Every spike of the latest finished brain step, copied so the next step can run.</summary>
+		public int[] LastSpikes { get; private set; } = new int[0];
 		/// <summary>The sensory drives applied on the latest brain step.</summary>
 		public IReadOnlyList<(string type, string side, double hz)> LastDrives { get; private set; } = new List<(string, string, double)>();
 
@@ -85,19 +98,36 @@ namespace FlyRarria.Content.Pets
 
 			EnsureBrain();
 
-			if (_tick++ % BrainEveryTicks == 0) {
-				var frame = SampleWorld(player);
-				var drives = SensoryEncoders.Encode(frame);
-				SensoryEncoders.Apply(_net, _pops, drives);
-				_net.Step(100); // 100 x 0.5ms = 50ms brain time
-				LastDrives = drives;
-				BrainTicks++;
-				_cmd = _decoder.Decode(brainDriven: _brainLoaded);
-				TendBond(player, frame);
+			// A busy whole-brain step mustn't stall the frame, so it runs on a worker and its
+			// result lands the first frame after it finishes. A step that overruns its 3 ticks
+			// delays the next one: the brain runs slower than real time instead of the game.
+			if (_brainStep?.IsCompleted == true) {
+				FinishBrainStep(player);
+			}
+			if (++_ticksSinceBrainStart >= BrainEveryTicks && _brainStep == null) {
+				_stepFrame = SampleWorld(player);
+				_stepDrives = SensoryEncoders.Encode(_stepFrame);
+				SensoryEncoders.Apply(_net, _pops, _stepDrives);
+				_stepGameTicks = _ticksSinceBrainStart;
+				_ticksSinceBrainStart = 0;
+				LifNetwork net = _net;
+				_brainStep = Task.Run(() => net.Step(100)); // 100 x 0.5ms = 50ms brain time
 			}
 
 			Steer(player);
 			Animate();
+		}
+
+		private void FinishBrainStep(Player player)
+		{
+			Task step = _brainStep;
+			_brainStep = null;
+			step.GetAwaiter().GetResult(); // a failed step throws here, on the game thread
+			LastSpikes = _net.SpikesThisTick.ToArray();
+			LastDrives = _stepDrives;
+			BrainTicks++;
+			_cmd = _decoder.Decode(brainDriven: _brainLoaded);
+			TendBond(player, _stepFrame, _stepGameTicks);
 		}
 
 		private void EnsureBrain()
@@ -281,13 +311,13 @@ namespace FlyRarria.Content.Pets
 			return n;
 		}
 
-		private void TendBond(Player player, SensoryFrame frame)
+		private void TendBond(Player player, SensoryFrame frame, int gameTicks)
 		{
 			var bond = BondSystem.Instance?.Get(player);
 			if (bond == null) {
 				return;
 			}
-			bond.Tick(BrainEveryTicks / 3600f); // game ticks -> real-time minutes
+			bond.Tick(gameTicks / 3600f); // game ticks -> real-time minutes
 			if (--_feedCd > 0) {
 				return;
 			}
