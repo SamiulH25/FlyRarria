@@ -1,5 +1,6 @@
 using Terraria;
 using Terraria.ModLoader;
+using FlyRarria.Brain;
 using FlyRarria.Content.Bond;
 using FlyRarria.Content.Pets;
 
@@ -24,7 +25,10 @@ namespace FlyRarria.Content.Debug
 				for (int i = 0; i < Main.maxProjectiles; i++) {
 					var p = Main.projectile[i];
 					if (p.active && p.type == ModContent.ProjectileType<MoteProjectile>() && p.owner == player.whoAmI && p.ModProjectile is MoteProjectile m) {
-						caller.Reply($"mode={m.CurrentMode}" + (m.BrainReflex ? " [reflex — circuit data not loaded]" : " [brain]"));
+						string brain = m.BrainLoading ? " [loading brain...]"
+							: m.BrainReflex ? $" [reflex — {CircuitLoader.LoadNote}]"
+							: $" [brain] {m.Graph.NeuronCount:N0} neurons, {m.Net.ShardCount} threads, last step {m.LastStepMs:F0} ms, {m.RealTimeFactor * 100:F0}% real time";
+						caller.Reply($"mode={m.CurrentMode}" + brain);
 					}
 				}
 				return;

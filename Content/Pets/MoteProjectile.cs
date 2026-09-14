@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Xna.Framework;
@@ -13,10 +15,11 @@ namespace FlyRarria.Content.Pets
 	/// <summary>
 	/// The companion. Vanilla pet shell (follow/teleport/keepalive) with the brain
 	/// in the decision seat: every 3rd tick the world is sampled into a SensoryFrame,
-	/// the LIF circuits step 50ms on a worker thread, and the decoded command steers velocity.
-	/// Until circuit data ships (Circuits/*.json), the brain resolves no populations
-	/// and the decoder reports Idle/Reflex — the pet then falls back to plain
-	/// following so it is still a working pet. No fake brain activity is ever shown.
+	/// the network steps 50ms on worker threads, and the decoded command steers velocity.
+	/// The brain is the whole male CNS when Circuits/male-cns.connectome.gz ships, else the
+	/// merged circuit JSON. It loads in the background (about a second for the whole CNS);
+	/// until then, or with no circuit data at all, the pet falls back to plain following
+	/// and the HUD says so. No fake brain activity is ever shown.
 	/// </summary>
 	public class MoteProjectile : ModProjectile
 	{
@@ -25,16 +28,28 @@ namespace FlyRarria.Content.Pets
 		private const float TeleportTiles = 25f;
 		private const int MealCooldownBrainTicks = 10 * 60 / BrainEveryTicks; // ~10s; _feedCd counts brain ticks
 
+		/// <summary>Threads stepping the brain: most cores, leaving some to the game.</summary>
+		private static int BrainShards => Math.Clamp(Environment.ProcessorCount * 3 / 4, 1, 12);
+
+		private sealed class BrainParts
+		{
+			public Connectome Graph;
+			public LifNetwork Net;
+			public PopulationIndex Pops;
+		}
+
+		private Task<BrainParts> _brainLoad;
 		private LifNetwork _net;
 		private PopulationIndex _pops;
 		private MotorDecoder _decoder;
-		private MotorCommand _cmd;
+		private MotorCommand _cmd = new MotorCommand { Mode = MoteMode.Follow, Reflex = true };
 		private int _ticksSinceBrainStart = BrainEveryTicks - 1;
-		/// <summary>The brain step running on a worker thread, or null while the network is idle.</summary>
+		/// <summary>The brain step running on worker threads, or null while the network is idle.</summary>
 		private Task _brainStep;
 		private SensoryFrame _stepFrame;
 		private List<(string type, string side, double hz)> _stepDrives;
-		private int _stepGameTicks;
+		private int _stepGameTicks = BrainEveryTicks;
+		private double _stepMs; // written by the step's worker, read once it's done
 		private bool _brainLoaded;
 		private int _feedCd;
 		private float _damageFlash;
@@ -42,10 +57,12 @@ namespace FlyRarria.Content.Pets
 
 		public MoteMode CurrentMode => _cmd.Mode;
 		public bool BrainReflex => _cmd.Reflex;
-		/// <summary>The loaded circuit graph, or null while running the [reflex] fallback.</summary>
+		/// <summary>True until the background brain load finishes.</summary>
+		public bool BrainLoading => _net == null;
+		/// <summary>The loaded circuit graph, or null while loading or running the [reflex] fallback.</summary>
 		public Connectome Graph { get; private set; }
 		/// <summary>
-		/// The live network. It steps on a worker thread, so read <see cref="LastSpikes"/> rather
+		/// The live network. It steps on worker threads, so read <see cref="LastSpikes"/> rather
 		/// than its spike list; its rates are only written at the end of a step and are fine to display.
 		/// </summary>
 		public LifNetwork Net => _net;
@@ -56,6 +73,10 @@ namespace FlyRarria.Content.Pets
 		public int[] LastSpikes { get; private set; } = new int[0];
 		/// <summary>The sensory drives applied on the latest brain step.</summary>
 		public IReadOnlyList<(string type, string side, double hz)> LastDrives { get; private set; } = new List<(string, string, double)>();
+		/// <summary>Wall-clock time of the latest 50 ms brain step.</summary>
+		public double LastStepMs { get; private set; }
+		/// <summary>Brain time over game time, smoothed: below 1 when steps overrun their 3 ticks.</summary>
+		public double RealTimeFactor { get; private set; } = 1;
 
 		/// <summary>The player's active mote, or null.</summary>
 		public static MoteProjectile FindFor(Player player)
@@ -98,20 +119,26 @@ namespace FlyRarria.Content.Pets
 
 			EnsureBrain();
 
-			// A busy whole-brain step mustn't stall the frame, so it runs on a worker and its
+			// A busy whole-brain step mustn't stall the frame, so it runs on workers and its
 			// result lands the first frame after it finishes. A step that overruns its 3 ticks
 			// delays the next one: the brain runs slower than real time instead of the game.
-			if (_brainStep?.IsCompleted == true) {
-				FinishBrainStep(player);
-			}
-			if (++_ticksSinceBrainStart >= BrainEveryTicks && _brainStep == null) {
-				_stepFrame = SampleWorld(player);
-				_stepDrives = SensoryEncoders.Encode(_stepFrame);
-				SensoryEncoders.Apply(_net, _pops, _stepDrives);
-				_stepGameTicks = _ticksSinceBrainStart;
-				_ticksSinceBrainStart = 0;
-				LifNetwork net = _net;
-				_brainStep = Task.Run(() => net.Step(100)); // 100 x 0.5ms = 50ms brain time
+			if (_net != null) {
+				if (_brainStep?.IsCompleted == true) {
+					FinishBrainStep(player);
+				}
+				if (++_ticksSinceBrainStart >= BrainEveryTicks && _brainStep == null) {
+					_stepFrame = SampleWorld(player);
+					_stepDrives = SensoryEncoders.Encode(_stepFrame);
+					SensoryEncoders.Apply(_net, _pops, _stepDrives);
+					_stepGameTicks = _ticksSinceBrainStart;
+					_ticksSinceBrainStart = 0;
+					LifNetwork net = _net;
+					_brainStep = Task.Run(() => {
+						var clock = Stopwatch.StartNew();
+						net.Step(100); // 100 x 0.5ms = 50ms brain time
+						_stepMs = clock.Elapsed.TotalMilliseconds;
+					});
+				}
 			}
 
 			Steer(player);
@@ -125,6 +152,8 @@ namespace FlyRarria.Content.Pets
 			step.GetAwaiter().GetResult(); // a failed step throws here, on the game thread
 			LastSpikes = _net.SpikesThisTick.ToArray();
 			LastDrives = _stepDrives;
+			LastStepMs = _stepMs;
+			RealTimeFactor += 0.2 * ((double)BrainEveryTicks / Math.Max(BrainEveryTicks, _stepGameTicks) - RealTimeFactor);
 			BrainTicks++;
 			_cmd = _decoder.Decode(brainDriven: _brainLoaded);
 			TendBond(player, _stepFrame, _stepGameTicks);
@@ -135,17 +164,50 @@ namespace FlyRarria.Content.Pets
 			if (_net != null) {
 				return;
 			}
-			// Real circuit data when embedded (Circuits/*.json); otherwise an empty
-			// graph so the pet stays a working follower and the HUD reports [reflex].
-			Connectome graph = CircuitLoader.TryLoadAll();
-			_brainLoaded = graph != null;
-			Graph = graph;
-			graph ??= new Connectome(0, new int[0], new int[0], new ushort[0],
-				new sbyte[0], new string[0], new int[0], new double[0], new double[0]);
-			_net = new LifNetwork(graph, 0.5, LifNetwork.Params.Shiu2024());
-			_pops = new PopulationIndex(graph);
+			_brainLoad ??= Task.Run(() => BuildBrain(CircuitLoader.LoadShared(out var parameters), parameters));
+			if (!_brainLoad.IsCompleted) {
+				return; // following on reflex meanwhile
+			}
+			BrainParts parts;
+			try {
+				parts = _brainLoad.GetAwaiter().GetResult();
+			}
+			catch (Exception e) {
+				Mod.Logger.Error("brain failed to load, running [reflex]", e);
+				parts = BuildBrain(null, LifNetwork.Params.Shiu2024());
+			}
+			_brainLoaded = parts.Graph != null;
+			Graph = parts.Graph;
+			_net = parts.Net;
+			_pops = parts.Pops;
 			_decoder = new MotorDecoder(_net, _pops, MotorDecoder.Thresholds.Default);
 			_cmd = new MotorCommand { Mode = MoteMode.Follow, Reflex = !_brainLoaded };
+		}
+
+		/// <summary>
+		/// A network over <paramref name="graph"/>, or over an empty graph when it's null so the pet
+		/// stays a working follower and the HUD reports [reflex].
+		/// </summary>
+		private static BrainParts BuildBrain(Connectome graph, LifNetwork.Params parameters)
+		{
+			Connectome g = graph ?? new Connectome(0, new int[0], new int[0], new ushort[0],
+				new sbyte[0], new string[0], new int[0], new double[0], new double[0]);
+			var parts = new BrainParts {
+				Graph = graph,
+				Net = new LifNetwork(g, 0.5, parameters, shards: BrainShards),
+				Pops = new PopulationIndex(g),
+			};
+			// Resolve every population the encoders, decoder and neuroscope use now, off the game
+			// thread: each new lookup scans every neuron's type, and later ones are cache hits.
+			foreach (var (type, side, _) in SensoryEncoders.Encode(SensoryEncoders.EveryChannel)) {
+				parts.Pops.Resolve(type, side);
+			}
+			foreach (var (type, side) in MotorDecoder.Readouts) {
+				parts.Pops.Resolve(type, side);
+			}
+			parts.Pops.Resolve("LC4"); // STARTLE reads the loom detectors on both sides
+			parts.Pops.Resolve("LPLC2");
+			return parts;
 		}
 
 		private SensoryFrame SampleWorld(Player player)

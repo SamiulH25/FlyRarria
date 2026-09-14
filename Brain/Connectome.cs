@@ -41,8 +41,35 @@ namespace FlyRarria.Brain
 			BodyIds = bodyIds;
 			SomaX = somaX;
 			SomaY = somaY;
+			SortRows();
+			MarkInvertedEdges();
 		}
 
+		/// <summary>
+		/// Orders each neuron's connections by target (in place), which LifNetwork relies on to
+		/// find a neuron's connections into each of its shards. Files from extract_connectome.py
+		/// are already sorted; circuit JSON isn't.
+		/// </summary>
+		private void SortRows()
+		{
+			for (int i = 0; i < NeuronCount; i++) {
+				int start = RowStart[i], end = i + 1 < NeuronCount ? RowStart[i + 1] : Targets.Length;
+				for (int e = start + 1; e < end; e++) {
+					if (Targets[e] < Targets[e - 1]) {
+						Array.Sort(Targets, SynapseCounts, start, end - start);
+						break;
+					}
+				}
+			}
+		}
+
+		/// <summary>
+		/// Fast synaptic sign of a transmitter: GABA, glutamate and histamine inhibit, and
+		/// acetylcholine (and unknown or unclear calls) excite, as in Shiu et al. 2024.
+		/// Dopamine, octopamine and serotonin act through G-protein receptors on seconds, not
+		/// as fast synapses, so they get 0. Treated as excitation, the dopaminergic PAM and PPL
+		/// neurons close a KC -> DAN -> KC loop that keeps the mushroom body firing for good.
+		/// </summary>
 		public static sbyte SignForTransmitter(string nt)
 		{
 			switch (nt.Trim().ToLowerInvariant()) {
@@ -52,8 +79,45 @@ namespace FlyRarria.Brain
 				case "histamine":
 				case "hist":
 					return -1;
+				case "dopamine":
+				case "octopamine":
+				case "serotonin":
+					return 0;
 				default:
 					return 1;
+			}
+		}
+
+		/// <summary>
+		/// Connections whose sign is the opposite of their presynaptic neuron's, one bit per
+		/// connection (bit e of word e / 64), or null when there are none: Kenyon cell -> Kenyon
+		/// cell. KCs are cholinergic, but their axo-axonic synapses onto each other act through
+		/// muscarinic mAChR-B and suppress the neighbour (Manoim et al. 2022, lateral inhibition).
+		/// As excitation, ~1.15M of them make all ~4,000 KCs of the whole CNS fire together for good.
+		/// </summary>
+		public ulong[] InvertedEdges { get; private set; }
+		/// <summary>Neurons with at least one bit set in <see cref="InvertedEdges"/>.</summary>
+		public bool[] HasInvertedEdges { get; private set; }
+
+		public bool IsInverted(int edge) => InvertedEdges != null && (InvertedEdges[edge >> 6] & (1UL << edge)) != 0;
+
+		private static bool IsKenyonCell(string type) => type != null && type.StartsWith("KC");
+
+		private void MarkInvertedEdges()
+		{
+			for (int i = 0; i < NeuronCount; i++) {
+				if (!IsKenyonCell(Types[i])) {
+					continue;
+				}
+				int end = i + 1 < NeuronCount ? RowStart[i + 1] : Targets.Length;
+				for (int e = RowStart[i]; e < end; e++) {
+					if (IsKenyonCell(Types[Targets[e]])) {
+						InvertedEdges ??= new ulong[(Targets.Length + 63) >> 6];
+						HasInvertedEdges ??= new bool[NeuronCount];
+						InvertedEdges[e >> 6] |= 1UL << e;
+						HasInvertedEdges[i] = true;
+					}
+				}
 			}
 		}
 	}

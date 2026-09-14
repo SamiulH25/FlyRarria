@@ -45,12 +45,13 @@ namespace FlyRarria.Content.Debug
 				return true;
 			}
 			MoteMode? mode = null;
-			bool reflex = true;
+			bool reflex = true, loading = false;
 			// Anchor above the fly; fall back to the player while it's away.
 			Vector2 anchor = player.Top;
 			if (MoteProjectile.FindFor(player) is MoteProjectile m) {
 				mode = m.CurrentMode;
 				reflex = m.BrainReflex;
+				loading = m.BrainLoading;
 				anchor = m.Projectile.Top;
 			}
 			var bond = BondSystem.Instance?.Get(player);
@@ -60,7 +61,7 @@ namespace FlyRarria.Content.Debug
 			var sb = Main.spriteBatch;
 			var font = FontAssets.MouseText.Value;
 			string modeText = mode?.ToString() ?? "Away";
-			string driveText = reflex ? "reflex" : "brain";
+			string driveText = loading ? "loading" : reflex ? "reflex" : "brain";
 			string levelText = $"Lv{level}";
 
 			float lineH = font.MeasureString("Ay").Y * TextScale;

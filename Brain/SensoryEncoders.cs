@@ -21,10 +21,18 @@ namespace FlyRarria.Brain
 		/// <summary>
 		/// Sugar GRN gain from hunger (0 full .. 1 starving), as starvation raises
 		/// sugar-neuron sensitivity in real flies. 1.0 at 0.2 (a new bond's default and
-		/// SensoryFrame.Empty), so the bench-verified sugar response is unchanged there;
-		/// a full fly's 0.6 keeps MN9 near silent (tools/bench.py sweep: 0.75 still flickered into FEED).
+		/// SensoryFrame.Empty), so the bench-verified sugar response is unchanged there.
+		/// Steep below that: depression in the whole CNS compresses MN9, so a full fly needs
+		/// 0.2 to stay near silent (MN9 ~14 Hz, vs ~26 Hz at the old 0.6, which still fed).
 		/// </summary>
-		public static double SugarGain(float hunger) => Math.Min(1.5, 0.6 + 2.0 * Math.Clamp(hunger, 0f, 1f));
+		public static double SugarGain(float hunger) => Math.Min(1.5, 0.2 + 4.0 * Math.Clamp(hunger, 0f, 1f));
+
+		/// <summary>A frame with every channel on, so <see cref="Encode"/> lists every population it can drive.</summary>
+		public static SensoryFrame EveryChannel => new SensoryFrame {
+			LoomLeft = 1, LoomRight = 1, ChaseLeft = 1, ChaseRight = 1, SmallObjectLeft = 1, SmallObjectRight = 1,
+			SugarContact = 1, BitterContact = 1, FoodSmell = 1, WindLeft = 1, WindRight = 1, Touch = 1,
+			DamageFlash = 1, LightLevel = 1, Heat = 1, SocialCue = 1, Hunger = 1,
+		};
 
 		public static List<(string type, string side, double hz)> Encode(SensoryFrame f)
 		{

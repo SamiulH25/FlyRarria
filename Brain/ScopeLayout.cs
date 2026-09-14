@@ -84,8 +84,14 @@ namespace FlyRarria.Brain
 
 		public readonly Connectome Graph;
 		public readonly ScopeShape Shape;
+		/// <summary>NaN for the few neurons with no position (<see cref="IsPlaced"/>).</summary>
 		public readonly float[] X;
 		public readonly float[] Y;
+		/// <summary>
+		/// Shape pixel (row * Width + column) at each neuron's top-left, kept one pixel inside the
+		/// right and bottom edges so a 2x2 dot fits; -1 when unplaced.
+		/// </summary>
+		public readonly int[] PixelOf;
 		/// <summary>Neurons in a <see cref="MotorDecoder.Readouts"/> population (drawn larger).</summary>
 		public readonly bool[] IsReadout;
 		/// <summary>
@@ -95,33 +101,46 @@ namespace FlyRarria.Brain
 		/// </summary>
 		public readonly int[] TopEdges;
 
-		/// <summary>Null when the circuits carry no positions or the shape is missing; the reason goes to <paramref name="note"/>.</summary>
-		public static ScopeLayout TryCreate(Connectome graph, PopulationIndex pops, out string note)
+		/// <summary>
+		/// Null when the circuits carry no positions or the shape is missing; the reason goes to <paramref name="note"/>.
+		/// Walks every connection, so for the whole CNS build it off the game thread.
+		/// </summary>
+		/// <param name="readouts">The neurons of each <see cref="MotorDecoder.Readouts"/> population.</param>
+		public static ScopeLayout TryCreate(Connectome graph, IEnumerable<int[]> readouts, out string note)
 		{
 			if (graph.Positions == null) {
 				note = "circuit files have no neuron positions: run tools/extract_circuits.py --positions-only";
 				return null;
 			}
 			var shape = ScopeShape.TryLoad(out note);
-			return shape == null ? null : new ScopeLayout(graph, pops, shape);
+			return shape == null ? null : new ScopeLayout(graph, readouts, shape);
 		}
 
-		private ScopeLayout(Connectome graph, PopulationIndex pops, ScopeShape shape)
+		private ScopeLayout(Connectome graph, IEnumerable<int[]> readouts, ScopeShape shape)
 		{
 			Graph = graph;
 			Shape = shape;
 			int n = graph.NeuronCount;
 			X = new float[n];
 			Y = new float[n];
+			PixelOf = new int[n];
 			for (int i = 0; i < n; i++) {
-				var (u, v) = shape.Project(graph.Positions[i * 3], graph.Positions[i * 3 + 1], graph.Positions[i * 3 + 2]);
+				float px = graph.Positions[i * 3], py = graph.Positions[i * 3 + 1], pz = graph.Positions[i * 3 + 2];
+				if (float.IsNaN(px) || float.IsNaN(py) || float.IsNaN(pz)) {
+					X[i] = Y[i] = float.NaN;
+					PixelOf[i] = -1;
+					continue;
+				}
+				var (u, v) = shape.Project(px, py, pz);
 				X[i] = Math.Clamp(u / shape.Width, 0f, 1f);
 				Y[i] = Math.Clamp(v / shape.Height, 0f, 1f);
+				int col = Math.Clamp((int)u, 0, shape.Width - 2), row = Math.Clamp((int)v, 0, shape.Height - 2);
+				PixelOf[i] = row * shape.Width + col;
 			}
 
 			IsReadout = new bool[n];
-			foreach (var (type, side) in MotorDecoder.Readouts) {
-				foreach (int i in pops.Resolve(type, side)) {
+			foreach (int[] population in readouts) {
+				foreach (int i in population) {
 					IsReadout[i] = true;
 				}
 			}
@@ -147,18 +166,19 @@ namespace FlyRarria.Brain
 			}
 		}
 
-		/// <summary>Mean position of a population, or null if it resolves to nothing.</summary>
+		/// <summary>Mean position of a population's placed neurons, or null if it has none.</summary>
 		public (float x, float y)? Centroid(int[] population)
 		{
-			if (population.Length == 0) {
-				return null;
-			}
 			float x = 0, y = 0;
+			int placed = 0;
 			foreach (int i in population) {
-				x += X[i];
-				y += Y[i];
+				if (PixelOf[i] >= 0) {
+					x += X[i];
+					y += Y[i];
+					placed++;
+				}
 			}
-			return (x / population.Length, y / population.Length);
+			return placed == 0 ? null : (x / placed, y / placed);
 		}
 	}
 }

@@ -8,14 +8,14 @@ namespace FlyRarria
 	{
 		public override void Load()
 		{
-			// tML's compiler ignores <EmbeddedResource>, so Circuits/*.json ship as loose
-			// .tmod files. Cache them while the archive is open; CircuitLoader reads them
-			// whenever a mote is summoned.
+			// tML's compiler ignores <EmbeddedResource>, so Circuits/* (the circuit JSON and the
+			// whole-CNS connectome) ship as loose .tmod files. Cache them while the archive is
+			// open; CircuitLoader reads them when the first mote is summoned.
 			var circuits = new Dictionary<string, byte[]>();
 			var names = GetFileNames();
 			if (names != null) {
 				foreach (string path in names) {
-					if (path.StartsWith("Circuits/") && path.EndsWith(".json")) {
+					if (path.StartsWith("Circuits/") && (path.EndsWith(".json") || path.EndsWith(".gz"))) {
 						circuits[path] = GetFileBytes(path);
 					}
 				}
@@ -26,6 +26,7 @@ namespace FlyRarria
 		public override void Unload()
 		{
 			CircuitLoader.FileSource = null;
+			CircuitLoader.ForgetShared();
 		}
 	}
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Terraria;
@@ -21,6 +22,8 @@ namespace FlyRarria.Content.Debug
 	/// synapses flash as lines, orange excitatory and blue inhibitory. Labels show the
 	/// live sensory drives and readout rates. Everything drawn comes from
 	/// MoteProjectile.LastSpikes, so nothing lights up without real spikes.
+	/// Neurons and glow are painted into two textures the size of the brain silhouette,
+	/// so the whole CNS (176k neurons, tens of thousands of spikes a step) costs two draws.
 	/// </summary>
 	public class Neuroscope : ModSystem
 	{
@@ -44,10 +47,18 @@ namespace FlyRarria.Content.Debug
 		};
 
 		private Connectome _graph;
+		private Task<(ScopeLayout layout, string note)> _layoutTask;
 		private ScopeLayout _layout;
 		private string _layoutNote;
 		private int _graphW = 300, _graphH = 325; // the ScopeShape's size once attached
-		private float[] _glow;
+		/// <summary>Every neuron, dim, painted once per layout.</summary>
+		private Texture2D _wiring;
+		/// <summary>Spiking neurons, repainted each tick while anything glows.</summary>
+		private Texture2D _glowTexture;
+		private float[] _glowExc, _glowInh; // per silhouette pixel
+		private Color[] _glowPixels;
+		private bool _glowing;
+		private int[] _readoutNeurons;
 		private float[] _edgeLife; // per ScopeLayout.TopEdges slot
 		private readonly List<int> _activeEdges = new List<int>();
 		private readonly Dictionary<(string, string), (float x, float y)?> _centroids = new Dictionary<(string, string), (float x, float y)?>();
@@ -75,6 +86,13 @@ namespace FlyRarria.Content.Debug
 		{
 			_toggle = null;
 			Visible = false;
+			Texture2D wiring = _wiring, glow = _glowTexture;
+			if (wiring != null || glow != null) {
+				Main.QueueMainThreadAction(() => {
+					wiring?.Dispose();
+					glow?.Dispose();
+				});
+			}
 		}
 
 		public static void ProcessToggle()
@@ -97,12 +115,14 @@ namespace FlyRarria.Content.Debug
 				Attach(m);
 			}
 			if (_layout == null) {
-				return;
+				if (_layoutTask?.IsCompleted == true) {
+					FinishAttach();
+				}
+				if (_layout == null) {
+					return;
+				}
 			}
 
-			for (int i = 0; i < _glow.Length; i++) {
-				_glow[i] *= GlowDecay;
-			}
 			for (int a = _activeEdges.Count - 1; a >= 0; a--) {
 				int k = _activeEdges[a];
 				float life = _edgeLife[k] * EdgeDecay;
@@ -114,39 +134,135 @@ namespace FlyRarria.Content.Debug
 				_edgeLife[k] = life;
 			}
 
-			if (m.BrainTicks == _lastBrainTick) {
-				return;
-			}
-			_lastBrainTick = m.BrainTicks;
-			int[] spikes = m.LastSpikes;
-			_spikeCount = spikes.Length;
-			int[] top = _layout.TopEdges;
-			foreach (int i in spikes) {
-				_glow[i] = 1f;
-				int end = (i + 1) * ScopeLayout.EdgesPerNeuron;
-				for (int k = i * ScopeLayout.EdgesPerNeuron; k < end && top[k] >= 0; k++) {
-					if (_edgeLife[k] <= 0f) {
-						_activeEdges.Add(k);
-					}
-					_edgeLife[k] = 1f;
+			bool newSpikes = m.BrainTicks != _lastBrainTick;
+			if (_glowing || newSpikes) {
+				for (int p = 0; p < _glowExc.Length; p++) {
+					_glowExc[p] *= GlowDecay;
+					_glowInh[p] *= GlowDecay;
 				}
+			}
+			if (newSpikes) {
+				_lastBrainTick = m.BrainTicks;
+				int[] spikes = m.LastSpikes;
+				_spikeCount = spikes.Length;
+				int[] top = _layout.TopEdges;
+				int w = _layout.Shape.Width;
+				foreach (int i in spikes) {
+					int px = _layout.PixelOf[i];
+					if (px < 0) {
+						continue;
+					}
+					float[] glow = _graph.Signs[i] < 0 ? _glowInh : _glowExc;
+					glow[px] = glow[px + 1] = glow[px + w] = glow[px + w + 1] = 1f;
+					int end = (i + 1) * ScopeLayout.EdgesPerNeuron;
+					for (int k = i * ScopeLayout.EdgesPerNeuron; k < end && top[k] >= 0; k++) {
+						if (_layout.PixelOf[_graph.Targets[top[k]]] < 0) {
+							continue;
+						}
+						if (_edgeLife[k] <= 0f) {
+							_activeEdges.Add(k);
+						}
+						_edgeLife[k] = 1f;
+					}
+				}
+			}
+			if (_glowing || newSpikes) {
+				PaintGlow();
 			}
 		}
 
 		private void Attach(MoteProjectile m)
 		{
 			_graph = m.Graph;
-			_layout = ScopeLayout.TryCreate(m.Graph, m.Pops, out _layoutNote);
-			if (_layout != null) {
-				_graphW = _layout.Shape.Width;
-				_graphH = _layout.Shape.Height;
-			}
-			_glow = new float[_graph.NeuronCount];
-			_edgeLife = new float[_graph.NeuronCount * ScopeLayout.EdgesPerNeuron];
+			_layout = null;
+			_layoutNote = null;
+			// Resolved here, on the game thread that owns the index; the layout walks every
+			// connection of the whole CNS, so it's built on a worker.
+			int[][] readouts = MotorDecoder.Readouts.Select(r => m.Pops.Resolve(r.type, r.side)).ToArray();
+			Connectome graph = m.Graph;
+			_layoutTask = Task.Run(() => (ScopeLayout.TryCreate(graph, readouts, out string note), note));
 			_activeEdges.Clear();
 			_centroids.Clear();
 			_lastBrainTick = m.BrainTicks;
 			_spikeCount = 0;
+		}
+
+		private void FinishAttach()
+		{
+			var task = _layoutTask;
+			_layoutTask = null;
+			try {
+				(_layout, _layoutNote) = task.GetAwaiter().GetResult();
+			}
+			catch (Exception e) {
+				Mod.Logger.Error("neuroscope layout failed", e);
+				_layoutNote = "neuroscope layout failed (see client.log)";
+			}
+			if (_layout == null) {
+				return;
+			}
+			_graphW = _layout.Shape.Width;
+			_graphH = _layout.Shape.Height;
+			int pixels = _graphW * _graphH;
+			_edgeLife = new float[_graph.NeuronCount * ScopeLayout.EdgesPerNeuron];
+			_readoutNeurons = Enumerable.Range(0, _graph.NeuronCount).Where(i => _layout.IsReadout[i] && _layout.PixelOf[i] >= 0).ToArray();
+			_glowExc = new float[pixels];
+			_glowInh = new float[pixels];
+			_glowPixels = new Color[pixels];
+			_glowing = false;
+
+			// Resting wiring: neurons per pixel on a log scale, tinted by the share that inhibit.
+			var exc = new int[pixels];
+			var inh = new int[pixels];
+			for (int i = 0; i < _graph.NeuronCount; i++) {
+				int px = _layout.PixelOf[i];
+				if (px < 0) {
+					continue;
+				}
+				int[] count = _graph.Signs[i] < 0 ? inh : exc;
+				count[px]++;
+				count[px + 1]++;
+				count[px + _graphW]++;
+				count[px + _graphW + 1]++;
+			}
+			int max = 1;
+			for (int p = 0; p < pixels; p++) {
+				max = Math.Max(max, exc[p] + inh[p]);
+			}
+			var wiring = new Color[pixels];
+			for (int p = 0; p < pixels; p++) {
+				int total = exc[p] + inh[p];
+				if (total > 0) {
+					float brightness = 0.3f + 0.6f * (float)(Math.Log(1 + total) / Math.Log(1 + max));
+					wiring[p] = Color.Lerp(ExcBase, InhBase, inh[p] / (float)total) * brightness;
+				}
+			}
+			_wiring?.Dispose();
+			_glowTexture?.Dispose();
+			_wiring = new Texture2D(Main.graphics.GraphicsDevice, _graphW, _graphH);
+			_wiring.SetData(wiring);
+			_glowTexture = new Texture2D(Main.graphics.GraphicsDevice, _graphW, _graphH);
+			_glowTexture.SetData(_glowPixels);
+		}
+
+		/// <summary>Glow levels into the glow texture. Alpha 0 colours blend additively, so busy regions build up brighter.</summary>
+		private void PaintGlow()
+		{
+			_glowing = false;
+			for (int p = 0; p < _glowPixels.Length; p++) {
+				float e = _glowExc[p], h = _glowInh[p];
+				if (e < 0.06f && h < 0.06f) {
+					_glowPixels[p] = Color.Transparent;
+					continue;
+				}
+				_glowing = true;
+				_glowPixels[p] = new Color(
+					Math.Min(255, (int)(ExcGlow.R * e + InhGlow.R * h)),
+					Math.Min(255, (int)(ExcGlow.G * e + InhGlow.G * h)),
+					Math.Min(255, (int)(ExcGlow.B * e + InhGlow.B * h)),
+					0);
+			}
+			_glowTexture.SetData(_glowPixels);
 		}
 
 		public override void ModifyInterfaceLayers(List<GameInterfaceLayer> layers)
@@ -181,14 +297,16 @@ namespace FlyRarria.Content.Debug
 			Utils.DrawBorderString(sb, "Neuroscope", new Vector2(hx, hy), Color.White, 0.8f);
 			if (m == null || m.Graph == null || !ReferenceEquals(m.Graph, _graph) || _layout == null) {
 				string why = m == null ? "summon the mote to see its brain"
+					: m.BrainLoading ? "loading the brain..."
 					: m.Graph == null ? $"[reflex]: {CircuitLoader.LoadNote}"
-					: !ReferenceEquals(m.Graph, _graph) ? "loading circuits..." : _layoutNote;
+					: !ReferenceEquals(m.Graph, _graph) || _layoutTask != null ? $"laying out {m.Graph.NeuronCount:N0} neurons..."
+					: _layoutNote;
 				Utils.DrawBorderString(sb, why, new Vector2(hx, hy + 30), new Color(170, 170, 180), LabelScale);
 				return true;
 			}
 
 			Utils.DrawBorderString(sb, m.CurrentMode.ToString(), new Vector2(hx + 96, hy), MoteHud.ModeColor(m.CurrentMode), 0.8f);
-			string stats = $"{_spikeCount} spikes / 50ms   {_graph.NeuronCount} neurons";
+			string stats = $"{_spikeCount:N0} spikes / 50ms   {_graph.NeuronCount:N0} neurons";
 			float statsW = FontAssets.MouseText.Value.MeasureString(stats).X * LabelScale;
 			Utils.DrawBorderString(sb, stats, new Vector2(panel.Right - 10 - statsW, hy + 2), new Color(170, 170, 180), LabelScale);
 
@@ -209,11 +327,11 @@ namespace FlyRarria.Content.Debug
 			Utils.DrawBorderString(sb, "R", origin + new Vector2(_graphW - 10, 0), Color.White * 0.35f, 0.6f);
 			Utils.DrawBorderString(sb, "VNC", origin + new Vector2(2, shape.VncTop + 4), Color.White * 0.3f, 0.55f);
 
-			// Resting wiring: every neuron, dim.
-			for (int i = 0; i < _graph.NeuronCount; i++) {
-				float size = _layout.IsReadout[i] ? 4f : 2f;
-				Color c = (_graph.Signs[i] < 0 ? InhBase : ExcBase) * (_layout.IsReadout[i] ? 0.9f : 0.5f);
-				Rect(sb, Pos(_layout.X[i], _layout.Y[i]) - new Vector2(size / 2f), new Vector2(size), c);
+			// Resting wiring: every neuron, dim; readout neurons larger.
+			sb.Draw(_wiring, origin, Color.White);
+			foreach (int i in _readoutNeurons) {
+				Color c = (_graph.Signs[i] < 0 ? InhBase : ExcBase) * 0.9f;
+				Rect(sb, Pos(_layout.X[i], _layout.Y[i]) - new Vector2(2f), new Vector2(4f), c);
 			}
 
 			// Synapses carrying the latest spikes. Alpha 0 colours blend additively,
@@ -229,16 +347,7 @@ namespace FlyRarria.Content.Debug
 			}
 
 			// Spiking neurons.
-			for (int i = 0; i < _graph.NeuronCount; i++) {
-				float g = _glow[i];
-				if (g < 0.06f) {
-					continue;
-				}
-				float size = (_layout.IsReadout[i] ? 4f : 2f) + 2f * g;
-				Color c = (_graph.Signs[i] < 0 ? InhGlow : ExcGlow) * g;
-				c.A = 0;
-				Rect(sb, Pos(_layout.X[i], _layout.Y[i]) - new Vector2(size / 2f), new Vector2(size), c);
-			}
+			sb.Draw(_glowTexture, origin, Color.White);
 
 			DrawInputLabels(sb, m, origin, panel);
 			DrawReadoutLabels(sb, m, origin, panel);

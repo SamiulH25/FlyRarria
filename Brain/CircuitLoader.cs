@@ -33,6 +33,55 @@ namespace FlyRarria.Brain
 				?? (FileSource?.Invoke($"Circuits/{file}") is byte[] bytes ? new MemoryStream(bytes) : null);
 		}
 
+		private static readonly object SharedLock = new object();
+		private static Connectome _shared;
+		private static bool _sharedIsWholeCns;
+		private static bool _sharedTried;
+
+		/// <summary>
+		/// The graph every mote runs: the whole CNS when its file ships, else the merged
+		/// circuit JSON, else null ([reflex]). Loaded once and shared, since the whole CNS
+		/// takes ~0.6 s and ~160 MB; blocks, so call it off the game thread.
+		/// </summary>
+		/// <param name="parameters">What to run it with: <see cref="LifNetwork.Params.WholeCns"/> or <see cref="LifNetwork.Params.Shiu2024"/>.</param>
+		public static Connectome LoadShared(out LifNetwork.Params parameters)
+		{
+			lock (SharedLock) {
+				if (!_sharedTried) {
+					_shared = TryLoadWholeCns();
+					_sharedIsWholeCns = _shared != null;
+					_shared ??= TryLoadAll();
+					_sharedTried = true;
+				}
+				parameters = _sharedIsWholeCns ? LifNetwork.Params.WholeCns() : LifNetwork.Params.Shiu2024();
+				return _shared;
+			}
+		}
+
+		public static void ForgetShared()
+		{
+			lock (SharedLock) {
+				_shared = null;
+				_sharedIsWholeCns = false;
+				_sharedTried = false;
+			}
+		}
+
+		/// <summary>Circuits/male-cns.connectome.gz (tools/extract_connectome.py), or null when it doesn't ship.</summary>
+		public static Connectome TryLoadWholeCns()
+		{
+			TriedLoad = true;
+			using Stream s = OpenData(ConnectomeFile.FileName);
+			if (s == null) {
+				LoadNote = $"no Circuits/{ConnectomeFile.FileName}";
+				return null;
+			}
+			var clock = System.Diagnostics.Stopwatch.StartNew();
+			Connectome graph = ConnectomeFile.Read(s, out string dataset, out _);
+			LoadNote = $"whole CNS ({dataset}): {graph.NeuronCount:N0} neurons, {graph.Targets.Length:N0} connections, loaded in {clock.ElapsedMilliseconds} ms";
+			return graph;
+		}
+
 		public static Connectome TryLoadAll()
 		{
 			TriedLoad = true;
