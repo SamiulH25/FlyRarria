@@ -59,6 +59,10 @@ namespace FlyRarria.Content.Bond
 		public float Need => 1f - Hunger / 100f;
 
 		public int Level => Xp >= 900 ? 4 : Xp >= 450 ? 3 : Xp >= 150 ? 2 : 1;
+	/// <summary>Trust title shown in the HUD and level-up announcements.</summary>
+	public string Name => Level switch { 4 => "Partner", 3 => "Brave", 2 => "Curious", _ => "Shy" };
+	/// <summary>Bond XP outside meals: fetching, scares.</summary>
+	public void Reward(int xp) => Xp += xp;
 
 		public void Feed(bool sweet)
 		{

@@ -15,7 +15,9 @@ namespace FlyRarria.Brain
 		public float SmallObjectRight;
 		public float SugarContact;
 		public float BitterContact;
-		public float FoodSmell;
+	/// <summary>Food-odor strength per side: the brain turns toward the stronger one.</summary>
+	public float FoodSmellLeft;
+	public float FoodSmellRight;
 		public float WindLeft;
 		public float WindRight;
 		public float Touch;

@@ -117,9 +117,12 @@ namespace FlyRarria.Brain
 						n.TryGetProperty("pos", out var p) && p.GetArrayLength() == 3
 							? new[] { p[0].GetSingle(), p[1].GetSingle(), p[2].GetSingle() } : null));
 				}
-				foreach (var e in root.GetProperty("edges").EnumerateArray()) {
-					edges.Add((indexByBody[e[0].GetInt64()], indexByBody[e[1].GetInt64()], e[2].GetInt32()));
+			foreach (var e in root.GetProperty("edges").EnumerateArray()) {
+				int pre = indexByBody[e[0].GetInt64()], post = indexByBody[e[1].GetInt64()];
+				if (seenEdges.Add((pre, post))) {
+					edges.Add((pre, post, e[2].GetInt32()));
 				}
+			}
 			}
 
 			if (neurons.Count == 0) {

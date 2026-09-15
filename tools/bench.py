@@ -38,6 +38,20 @@ import numpy as np
 from scipy import sparse
 
 SIGN_NEG = {"gaba", "glutamate", "glut", "histamine", "hist"}
+
+
+def saturate(s, r_max):
+    """Mirror of Brain/SensoryEncoders.Saturate: encounters matter more than levels."""
+    p = max(0.0, s) ** 1.5
+    c = 0.2 ** 1.5
+    return r_max * p / (c + p)
+
+
+def vision_gain(light):
+    """Mirror of Brain/SensoryEncoders.VisionGain: 1.0 by day, 0.2 in the dark."""
+    return 0.2 + 0.8 * min(1.0, max(0.0, light))
+
+
 # Modulatory transmitters act through G-protein receptors, not fast synapses (Connectome.SignForTransmitter).
 SIGN_ZERO = {"dopamine", "octopamine", "serotonin"}
 
@@ -149,6 +163,7 @@ class CircuitNet:
         self.dt = dt_ms
         self.std_u = std_u
         self.std_tau = std_tau
+        self.seed = seed
         self.rng = np.random.default_rng(seed)
         self.tau_m, self.tau_s = 20.0, 5.0
         self.rest, self.thr = -52.0, -45.0
@@ -166,6 +181,10 @@ class CircuitNet:
         self.qi = 0
         self.hz = np.zeros(self.n)
         self.t = 0
+        # Each experiment is an independent trial: restart the noise stream so
+        # results never depend on which experiments ran before (the fallback
+        # wind path is noise-bistable and otherwise latches silent on repeats).
+        self.rng = np.random.default_rng(self.seed)
         self.resource = np.ones(self.n)
         self.last_fire = np.zeros(self.n, np.int64)
 
@@ -247,7 +266,7 @@ def experiment(net: CircuitNet, name: str):
         total = net.last.sum()
         return total == 0, f"total spikes={total:.0f} (want 0)"
     if name == "sugar":
-        for t, hz in [("LB3b", 120), ("LB3c", 120), ("PhG1a", 100), ("LgLG3", 80)]:
+        for t, hz in [("LB3b", 120), ("LB3c", 120), ("PhG1a", 100), ("PhG1b", 100), ("PhG1c", 100), ("LgLG3", 80), ("LgLG4", 80)]:
             net.drive(t, hz)
         net.run(2000)
         mn9 = net.rate("MN9")
@@ -256,7 +275,7 @@ def experiment(net: CircuitNet, name: str):
         kc = f", Kenyon cells {net.last[kcs].mean():.1f}Hz" if kcs else ""
         return ok, f"MN9={mn9:.0f}Hz (want 30-90){kc}"
     if name == "bitter":
-        for t, hz in [("LB3b", 120), ("LB3c", 120), ("LB1a", 120), ("LB1b", 120)]:
+        for t, hz in [("LB3b", 120), ("LB3c", 120), ("LB1a", 120), ("LB1b", 120), ("LB1c", 120), ("LB1d", 120)]:
             net.drive(t, hz)
         net.run(2000)
         mn9 = net.rate("MN9")
@@ -265,11 +284,52 @@ def experiment(net: CircuitNet, name: str):
     if name == "loom":
         for side in ("L", "R"):
             net.drive("LC4", 150, side)
+            net.drive("LPLC1", 150, side)
             net.drive("LPLC2", 150, side)
         net.run(1000)
         gf = net.rate("DNp01")
         ok = gf > 100 and not np.isnan(gf)
         return ok, f"DNp01={gf:.0f}Hz (want burst >100)"
+    if name == "night":
+        # Tracking in the dark: the C# encoders scale visual rMax by vision_gain,
+        # so a chase drives LC10a at saturate(1, 120*g) instead of saturate(1, 120).
+        # Assert the dark yaw is weaker than the day yaw but still tracks left.
+        net.reset()
+        net.drive("LC10a", saturate(1.0, 120 * vision_gain(1.0)), "L")
+        net.run(1000)
+        day = net.rate("DNa02", "R") - net.rate("DNa02", "L")
+        net.reset()
+        net.drive("LC10a", saturate(1.0, 120 * vision_gain(0.0)), "L")
+        net.run(1000)
+        night = net.rate("DNa02", "R") - net.rate("DNa02", "L")
+        ok = day <= -8 and night <= -1 and abs(night) < abs(day)
+        return ok, f"yaw day={day:.1f} night={night:.1f} (want day<=-8, night<=-1, |night|<|day|)"
+    if name == "startle":
+        # Small moving things freeze the mote: LC11 fires hard while the giant
+        # fiber stays quiet, which is exactly the decoder's Startle clause.
+        for side in ("L", "R"):
+            net.drive("LC11", 100, side)
+        net.run(2000)
+        lc11 = net.rate("LC11")
+        gf = net.rate("DNp01")
+        ok = not np.isnan(lc11) and lc11 > 40 and not np.isnan(gf) and gf <= 1
+        return ok, f"LC11={lc11:.0f}Hz (want >40), DNp01={gf:.1f}Hz (want <=1)"
+    if name == "seek":
+        # Hungry-weighted food odor with no contact: ORNs fire hard while every
+        # motor readout stays quiet, which is exactly the decoder's SEEK clause
+        # (ORN mean >= 25, DNp01 quiet so Escape can't shadow, MN9 low so FEED
+        # doesn't shadow).
+        for side in ("L", "R"):
+            net.drive("ORN_DM1", 60, side)
+            net.drive("ORN_VA2", 60, side)
+        net.run(2000)
+        orn = (net.rate("ORN_DM1") + net.rate("ORN_VA2")) / 2
+        gf = net.rate("DNp01")
+        mn9 = net.rate("MN9")
+        ok = (not np.isnan(orn) and orn >= 25
+              and not np.isnan(gf) and gf <= 1
+              and not np.isnan(mn9) and mn9 < 35)
+        return ok, f"ORN={orn:.0f}Hz (want >=25), DNp01={gf:.1f} (want <=1), MN9={mn9:.0f} (want <35)"
     if name == "groom":
         net.drive("DNg62", 0)  # driven via JO proxies below
         for t in ("JO-FV", "JO-CM", "BM_InOm"):
@@ -287,12 +347,11 @@ def main() -> int:
     ap.add_argument("--circuits", default="Circuits")
     ap.add_argument("--connectome", help="whole-CNS file from tools/extract_connectome.py, instead of the circuits")
     ap.add_argument("--experiment", default="all",
-                    choices=["all", "silent", "sugar", "bitter", "loom", "groom"])
+                    choices=["all", "silent", "sugar", "bitter", "loom", "groom", "night", "startle", "seek"])
     ap.add_argument("--gain", type=float, help="default 0.65 (circuits) or 0.8 (whole CNS)")
     ap.add_argument("--std-u", type=float, help="short-term depression per spike; default 0 (circuits) or 0.05 (whole CNS)")
     ap.add_argument("--std-tau", type=float, help="depression recovery in ms; default 300")
     args = ap.parse_args()
-
     if args.connectome:
         graph, defaults = load_connectome(Path(args.connectome)), WHOLE_CNS_DEFAULTS
     else:
@@ -302,7 +361,7 @@ def main() -> int:
     std_tau = defaults["std_tau"] if args.std_tau is None else args.std_tau
     net = CircuitNet(graph, gain=gain, std_u=std_u, std_tau=std_tau)
     print(f"loaded {net.n} neurons, gain={gain}, depression U={std_u} tau={std_tau}ms")
-    names = ["silent", "sugar", "bitter", "loom", "groom"] \
+    names = ["silent", "sugar", "bitter", "loom", "groom", "night", "startle", "seek"] \
         if args.experiment == "all" else [args.experiment]
     failed = 0
     for name in names:

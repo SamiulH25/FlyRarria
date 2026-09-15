@@ -38,10 +38,16 @@ namespace FlyRarria.Content.Debug
 				caller.Reply($"neuroscope {(Neuroscope.Visible ? "on" : "off")} (hotkey: {Neuroscope.KeyName})");
 				return;
 			}
-			if (args[0] == "senses") {
-				caller.Reply($"light near mote, rain={Main.raining}, night={!Main.dayTime}, hostiles tracked in 30-tile radius");
+		if (args[0] == "senses") {
+			var m = MoteProjectile.FindFor(player);
+			if (m == null) {
+				caller.Reply("no mote out");
 				return;
 			}
+			var f = m.LastSample;
+			caller.Reply($"mode={m.CurrentMode} light={f.LightLevel:F2} hunger={f.Hunger:F2} wind=({f.WindLeft:F2},{f.WindRight:F2}) smell=({f.FoodSmellLeft:F2},{f.FoodSmellRight:F2}) loom=({f.LoomLeft:F2},{f.LoomRight:F2}) chase=({f.ChaseLeft:F2},{f.ChaseRight:F2}) touch={f.Touch:F2} heat={f.Heat:F1} social={f.SocialCue:F1}");
+			return;
+		}
 			caller.Reply(Usage);
 		}
 	}

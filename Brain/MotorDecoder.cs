@@ -2,7 +2,7 @@ namespace FlyRarria.Brain
 {
 	/// <summary>
 	/// Reads descending/motor population rates into a movement command.
-	/// Priority ladder (first match wins): ESCAPE > FEED > STARTLE > SONG > GROOM > FOLLOW > IDLE.
+	/// Priority ladder (first match wins): ESCAPE > FEED > STARTLE > SONG > GROOM > SEEK > FOLLOW > IDLE.
 	/// Thresholds are hand-built scaffolding; the decisions (which populations
 	/// fire) come from the wiring. Tune per circuit set in config, not in code.
 	/// Rates near a threshold flicker tick to tick, so the decoder holds a mode with
@@ -17,6 +17,7 @@ namespace FlyRarria.Brain
 		Feed,
 		Groom,
 		Song,
+		Seek,
 		Sleep,
 	}
 
@@ -37,6 +38,8 @@ namespace FlyRarria.Brain
 			public double SongPip10Hz;
 			public double SteerMinHz;
 			public double BackwardMdnHz;
+		/// <summary>Mean food-odor (ORN) rate that turns the mote toward the stronger-smelling side.</summary>
+		public double SeekOrnHz;
 			/// <summary>The current mode keeps holding down to this fraction of its entry threshold.</summary>
 			public double ReleaseFraction;
 			/// <summary>Brain ticks in a row a new mode must win before the fly switches to it. ESCAPE switches at once.</summary>
@@ -46,8 +49,9 @@ namespace FlyRarria.Brain
 
 			public static Thresholds Default => new Thresholds {
 				FeedMn9Hz = 35, // sugar drives MN9 ~57Hz; touch/bristles leak ~25Hz into it
-				GroomADnHz = 40,
+				GroomADnHz = 30, // strong wind alone reads ~35; rain/damage read 110+; other baselines read 0
 				SongPip10Hz = 15,
+			SeekOrnHz = 25, // odor at 60Hz drives ORNs ~70Hz; hunger-weighted full-fly ~11Hz stays out
 				SteerMinHz = 3,
 				BackwardMdnHz = 20,
 				ReleaseFraction = 0.6,
@@ -93,11 +97,13 @@ namespace FlyRarria.Brain
 				_pendingTicks = 0;
 				return read;
 			}
-			var held = new MotorCommand { Mode = _mode, Reflex = read.Reflex };
-			if (_mode == MoteMode.Follow && !TrySteer(ref held, _t.ReleaseFraction)) {
-				held.Yaw = (float)(Rate("DNa02", "R") - Rate("DNa02", "L"));
-			}
-			return held;
+		var held = new MotorCommand { Mode = _mode, Reflex = read.Reflex };
+		if (_mode == MoteMode.Follow) {
+			// TrySteer at release scale keeps real steering while the switch confirms;
+			// on failure yaw stays 0 so EMA residue never steers the mote.
+			TrySteer(ref held, _t.ReleaseFraction);
+		}
+		return held;
 		}
 
 		/// <summary>One tick's reading of the ladder; <paramref name="current"/> gets the lower release thresholds.</summary>
@@ -115,10 +121,14 @@ namespace FlyRarria.Brain
 				cmd.Mode = MoteMode.Feed;
 				return cmd;
 			}
-			if (Rate("LC4") + Rate("LPLC2") > 60 * Scale(MoteMode.Startle)) {
-				cmd.Mode = MoteMode.Startle;
-				return cmd;
-			}
+		// STARTLE: looming seen without giant-fiber takeoff, or a small moving
+		// thing (LC11) worth freezing to watch. LC11 never bursts DNp01, so
+		// Escape can't shadow it the way it shadows the loom clause.
+		if (Rate("LC4") + Rate("LPLC2") > 60 * Scale(MoteMode.Startle)
+			|| Rate("LC11") > 40 * Scale(MoteMode.Startle)) {
+			cmd.Mode = MoteMode.Startle;
+			return cmd;
+		}
 			if (Rate("pIP10") >= _t.SongPip10Hz * Scale(MoteMode.Song)) {
 				cmd.Mode = MoteMode.Song;
 				return cmd;
@@ -128,6 +138,17 @@ namespace FlyRarria.Brain
 				cmd.Mode = MoteMode.Groom;
 				return cmd;
 			}
+		// SEEK: hungry-weighted food odor with no contact yet — turn toward the
+		// stronger side and close in. Smell drive already carries hunger (see
+		// Encode), so a full fly never reaches this.
+		double orn = (Rate("ORN_DM1") + Rate("ORN_VA2")) * 0.5;
+		if (orn >= _t.SeekOrnHz * Scale(MoteMode.Seek)) {
+			cmd.Mode = MoteMode.Seek;
+			cmd.Forward = 1;
+			cmd.Yaw = (float)(Rate("ORN_DM1", "R") + Rate("ORN_VA2", "R")
+				- Rate("ORN_DM1", "L") - Rate("ORN_VA2", "L"));
+			return cmd;
+		}
 			TrySteer(ref cmd, Scale(MoteMode.Follow));
 			return cmd;
 		}

@@ -54,15 +54,14 @@ namespace FlyRarria.Content.Debug
 				loading = m.BrainLoading;
 				anchor = m.Projectile.Top;
 			}
-			var bond = BondSystem.Instance?.Get(player);
-			int level = bond?.Level ?? 1;
-			float hunger = bond?.Hunger ?? 0f;
+		var bond = BondSystem.Instance?.Get(player);
+		float hunger = bond?.Hunger ?? 0f;
+		string levelText = $"{bond?.Name ?? "Shy"} · Lv{bond?.Level ?? 1}";
 
 			var sb = Main.spriteBatch;
 			var font = FontAssets.MouseText.Value;
 			string modeText = mode?.ToString() ?? "Away";
 			string driveText = loading ? "loading" : reflex ? "reflex" : "brain";
-			string levelText = $"Lv{level}";
 
 			float lineH = font.MeasureString("Ay").Y * TextScale;
 			float dot = 6f;
@@ -126,6 +125,7 @@ namespace FlyRarria.Content.Debug
 			MoteMode.Feed => new Color(150, 235, 110),
 			MoteMode.Groom => new Color(210, 170, 255),
 			MoteMode.Song => new Color(255, 140, 220),
+			MoteMode.Seek => new Color(255, 235, 130),
 			MoteMode.Sleep => new Color(140, 150, 230),
 			_ => new Color(130, 130, 130),
 		};
