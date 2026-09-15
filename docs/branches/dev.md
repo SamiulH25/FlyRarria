@@ -15,6 +15,12 @@ Cut from `main` at `3d04223`. Inherits all `fly-brain.md` known issues.
   DNa02 EMA residue; Startle fires on LC11 (small things freeze to watch).
   bench gains `night` (dark tracking weaker but alive) and `startle`
   (LC11 high, DNp01 quiet) experiments.
+- 2026-09-15 — Bearings + SEEK (uncommitted): Escape flees the sampled
+  threat bearing (`TryFindThreat`) instead of the owner; food smell split
+  L/R with strongest-smell position tracked; new SEEK mode (hungry-weighted
+  ORN mean >= 25 Hz, steers to the smell, contact hands to FEED). bench
+  `seek` passes on circuits + CNS. Proved the GF path is hair-trigger
+  (1 Hz loom drive already bursts DNp01), so night dims tracking, not escape.
 - 2026-09-14 — Documented intended behaviour of every `MoteMode`
   (Idle / Follow / Escape / Startle / Feed / Groom / Song / Sleep).
 - 2026-09-14 — Input-roadmap discussion: `LightLevel` sampled but never

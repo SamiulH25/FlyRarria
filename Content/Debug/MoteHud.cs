@@ -126,6 +126,7 @@ namespace FlyRarria.Content.Debug
 			MoteMode.Feed => new Color(150, 235, 110),
 			MoteMode.Groom => new Color(210, 170, 255),
 			MoteMode.Song => new Color(255, 140, 220),
+			MoteMode.Seek => new Color(255, 235, 130),
 			MoteMode.Sleep => new Color(140, 150, 230),
 			_ => new Color(130, 130, 130),
 		};

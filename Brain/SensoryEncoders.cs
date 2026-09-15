@@ -37,7 +37,7 @@ namespace FlyRarria.Brain
 		/// <summary>A frame with every channel on, so <see cref="Encode"/> lists every population it can drive.</summary>
 		public static SensoryFrame EveryChannel => new SensoryFrame {
 			LoomLeft = 1, LoomRight = 1, ChaseLeft = 1, ChaseRight = 1, SmallObjectLeft = 1, SmallObjectRight = 1,
-			SugarContact = 1, BitterContact = 1, FoodSmell = 1, WindLeft = 1, WindRight = 1, Touch = 1,
+			SugarContact = 1, BitterContact = 1, FoodSmellLeft = 1, FoodSmellRight = 1, WindLeft = 1, WindRight = 1, Touch = 1,
 			DamageFlash = 1, LightLevel = 1, Heat = 1, SocialCue = 1, Hunger = 1,
 		};
 
@@ -74,9 +74,14 @@ namespace FlyRarria.Brain
 			Add("LB1a", f.BitterContact, 120);
 			Add("LB1b", f.BitterContact, 120);
 
-			// Smell: food-ester glomeruli prime approach; valence resolved by taste.
-			Add("ORN_DM1", f.FoodSmell, 60);
-			Add("ORN_VA2", f.FoodSmell, 60);
+		// Smell: food-ester glomeruli, split by side so the brain knows which way
+		// dinner is. Weighted by hunger like sugar: a full fly barely smells food,
+		// so satiety-gated seeking falls out without the decoder knowing hunger.
+		double smell = SugarGain(f.Hunger);
+		Add("ORN_DM1", f.FoodSmellLeft, 60 * smell, "L");
+		Add("ORN_DM1", f.FoodSmellRight, 60 * smell, "R");
+		Add("ORN_VA2", f.FoodSmellLeft, 60 * smell, "L");
+		Add("ORN_VA2", f.FoodSmellRight, 60 * smell, "R");
 
 			// Mechano: wind splits by side; touch/damage drive bristles + grooming JO.
 			Add("prefix:JO-C", f.WindLeft, 120, "L"); // JO-C/E: static antennal deflection (wind)

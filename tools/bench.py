@@ -308,6 +308,22 @@ def experiment(net: CircuitNet, name: str):
         gf = net.rate("DNp01")
         ok = not np.isnan(lc11) and lc11 > 40 and not np.isnan(gf) and gf <= 1
         return ok, f"LC11={lc11:.0f}Hz (want >40), DNp01={gf:.1f}Hz (want <=1)"
+    if name == "seek":
+        # Hungry-weighted food odor with no contact: ORNs fire hard while every
+        # motor readout stays quiet, which is exactly the decoder's SEEK clause
+        # (ORN mean >= 25, DNp01 quiet so Escape can't shadow, MN9 low so FEED
+        # doesn't shadow).
+        for side in ("L", "R"):
+            net.drive("ORN_DM1", 60, side)
+            net.drive("ORN_VA2", 60, side)
+        net.run(2000)
+        orn = (net.rate("ORN_DM1") + net.rate("ORN_VA2")) / 2
+        gf = net.rate("DNp01")
+        mn9 = net.rate("MN9")
+        ok = (not np.isnan(orn) and orn >= 25
+              and not np.isnan(gf) and gf <= 1
+              and not np.isnan(mn9) and mn9 < 35)
+        return ok, f"ORN={orn:.0f}Hz (want >=25), DNp01={gf:.1f} (want <=1), MN9={mn9:.0f} (want <35)"
     if name == "groom":
         net.drive("DNg62", 0)  # driven via JO proxies below
         for t in ("JO-FV", "JO-CM", "BM_InOm"):
@@ -325,7 +341,7 @@ def main() -> int:
     ap.add_argument("--circuits", default="Circuits")
     ap.add_argument("--connectome", help="whole-CNS file from tools/extract_connectome.py, instead of the circuits")
     ap.add_argument("--experiment", default="all",
-                    choices=["all", "silent", "sugar", "bitter", "loom", "groom", "night", "startle"])
+                    choices=["all", "silent", "sugar", "bitter", "loom", "groom", "night", "startle", "seek"])
     ap.add_argument("--gain", type=float, help="default 0.65 (circuits) or 0.8 (whole CNS)")
     ap.add_argument("--std-u", type=float, help="short-term depression per spike; default 0 (circuits) or 0.05 (whole CNS)")
     ap.add_argument("--std-tau", type=float, help="depression recovery in ms; default 300")
@@ -340,7 +356,7 @@ def main() -> int:
     std_tau = defaults["std_tau"] if args.std_tau is None else args.std_tau
     net = CircuitNet(graph, gain=gain, std_u=std_u, std_tau=std_tau)
     print(f"loaded {net.n} neurons, gain={gain}, depression U={std_u} tau={std_tau}ms")
-    names = ["silent", "sugar", "bitter", "loom", "groom", "night", "startle"] \
+    names = ["silent", "sugar", "bitter", "loom", "groom", "night", "startle", "seek"] \
         if args.experiment == "all" else [args.experiment]
     failed = 0
     for name in names:

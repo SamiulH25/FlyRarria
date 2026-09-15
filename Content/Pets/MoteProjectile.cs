@@ -54,6 +54,12 @@ namespace FlyRarria.Content.Pets
 		private int _feedCd;
 		private float _damageFlash;
 		private int _lastLife = -1;
+	/// <summary>Offset to the worst closing hostile at the last sample, so Escape flees the threat.</summary>
+	private Vector2 _threatOffset;
+	private bool _hasThreat;
+	/// <summary>Strongest food smell's position at the last sample, so SEEK has somewhere to go.</summary>
+	private Vector2 _foodPos;
+	private bool _hasFood;
 
 		public MoteMode CurrentMode => _cmd.Mode;
 		public bool BrainReflex => _cmd.Reflex;
@@ -209,6 +215,31 @@ namespace FlyRarria.Content.Pets
 			parts.Pops.Resolve("LPLC2");
 			return parts;
 		}
+	/// <summary>Worst closing hostile right now: its offset from the mote and loom strength.</summary>
+	private bool TryFindThreat(out Vector2 offset, out float loom)
+	{
+		offset = Vector2.Zero;
+		loom = 0;
+		bool found = false;
+		for (int i = 0; i < Main.maxNPCs; i++) {
+			NPC npc = Main.npc[i];
+			if (!npc.active || npc.friendly || npc.lifeMax <= 5 || npc.dontTakeDamage) {
+				continue;
+			}
+			Vector2 d = npc.Center - Projectile.Center;
+			if (!float.IsFinite(d.X) || !float.IsFinite(d.Y) || d.Length() > 480) {
+				continue;
+			}
+			float closing = d == Vector2.Zero ? 0 : -Vector2.Dot(npc.velocity, Vector2.Normalize(d));
+			float l = MathHelper.Clamp((closing / 6f) * (1f - d.Length() / 480f), 0f, 1f);
+			if (l > loom) {
+				loom = l;
+				offset = d;
+				found = true;
+			}
+		}
+		return found;
+	}
 
 		private SensoryFrame SampleWorld(Player player)
 		{
@@ -228,31 +259,21 @@ namespace FlyRarria.Content.Pets
 				}
 			}
 
-			// Loom: nearest hostile closing in.
-			float worst = 0;
-			bool left = false;
-			for (int i = 0; i < Main.maxNPCs; i++) {
-				NPC npc = Main.npc[i];
-				if (!npc.active || npc.friendly || npc.lifeMax <= 5 || npc.dontTakeDamage) {
-					continue;
-				}
-				Vector2 d = npc.Center - Projectile.Center;
-				if (d.Length() > 480) {
-					continue;
-				}
-				float closing = -Vector2.Dot(npc.velocity, Vector2.Normalize(d));
-				float loom = MathHelper.Clamp((closing / 6f) * (1f - d.Length() / 480f), 0f, 1f);
-				if (loom > worst) {
-					worst = loom;
-					left = d.X < 0;
-				}
-			}
-			if (left) {
-				f.LoomLeft = worst;
+		// Loom: worst closing hostile, on the side it's on. Its offset is kept
+		// so Escape flees the threat instead of the owner.
+		if (TryFindThreat(out Vector2 threat, out float loom)) {
+			_threatOffset = threat;
+			_hasThreat = true;
+			if (threat.X < 0) {
+				f.LoomLeft = loom;
 			}
 			else {
-				f.LoomRight = worst;
+				f.LoomRight = loom;
 			}
+		}
+		else {
+			_hasThreat = false;
+		}
 			// Wind: world wind only, and only outdoors. Airflow from the mote's own flight
 			// is left out (flies cancel self-motion with efference copy); feeding it in
 			// drove JO past the groom threshold at follow speed. On the whole CNS, JO input
@@ -311,40 +332,65 @@ namespace FlyRarria.Content.Pets
 			}
 		}
 
-		private void ScanFood(Player player, ref SensoryFrame f)
-		{
-			// Dropped items near the mote: smell in a wide radius, taste on contact.
-			for (int i = 0; i < Main.maxItems; i++) {
-				Item item = Main.item[i];
-				if (!item.active || item.stack <= 0) {
-					continue;
+	private void ScanFood(Player player, ref SensoryFrame f)
+	{
+		// Dropped items near the mote: smell in a wide radius (split by side so
+		// the brain can turn toward it), taste on contact. Tracks the strongest
+		// smell's position so SEEK has somewhere to go.
+		_hasFood = false;
+		float best = 0;
+		for (int i = 0; i < Main.maxItems; i++) {
+			Item item = Main.item[i];
+			if (!item.active || item.stack <= 0) {
+				continue;
+			}
+			float d = Vector2.Distance(item.Center, Projectile.Center);
+			if (IsSweet(item) && d < 16 * 16) {
+				float s = 1f - d / (16 * 16);
+				if (item.Center.X < Projectile.Center.X) {
+					f.FoodSmellLeft = MathHelper.Max(f.FoodSmellLeft, s);
 				}
-				float d = Vector2.Distance(item.Center, Projectile.Center);
-				if (IsSweet(item) && d < 16 * 16) {
-					f.FoodSmell = MathHelper.Max(f.FoodSmell, 1f - d / (16 * 16));
+				else {
+					f.FoodSmellRight = MathHelper.Max(f.FoodSmellRight, s);
 				}
-				if (d < 40) {
-					if (IsSweet(item)) {
-						f.SugarContact = 1f;
-					}
-					if (IsBitter(item)) {
-						f.BitterContact = 1f;
-					}
+				if (s > best) {
+					best = s;
+					_foodPos = item.Center;
+					_hasFood = true;
 				}
 			}
-			// Hand-fed: player holding food close to the mote offers a taste.
-			Item held = player.HeldItem;
-			if (held != null && held.stack > 0
-				&& Vector2.Distance(player.Center, Projectile.Center) < 160) {
-				if (IsSweet(held)) {
-					f.SugarContact = MathHelper.Max(f.SugarContact, 0.7f);
-					f.FoodSmell = MathHelper.Max(f.FoodSmell, 0.5f);
+			if (d < 40) {
+				if (IsSweet(item)) {
+					f.SugarContact = 1f;
 				}
-				if (IsBitter(held)) {
+				if (IsBitter(item)) {
 					f.BitterContact = 1f;
 				}
 			}
 		}
+		// Hand-fed: player holding food close to the mote offers a taste. Its
+		// smell sits on the owner's side, and the owner is where to go.
+		Item held = player.HeldItem;
+		if (held != null && held.stack > 0
+			&& Vector2.Distance(player.Center, Projectile.Center) < 160) {
+			if (IsSweet(held)) {
+				f.SugarContact = MathHelper.Max(f.SugarContact, 0.7f);
+				if (player.Center.X < Projectile.Center.X) {
+					f.FoodSmellLeft = MathHelper.Max(f.FoodSmellLeft, 0.5f);
+				}
+				else {
+					f.FoodSmellRight = MathHelper.Max(f.FoodSmellRight, 0.5f);
+				}
+				if (0.5f > best) {
+					_foodPos = player.Center;
+					_hasFood = true;
+				}
+			}
+			if (IsBitter(held)) {
+				f.BitterContact = 1f;
+			}
+		}
+	}
 
 		private static bool IsSweet(Item item)
 		{
@@ -425,14 +471,31 @@ namespace FlyRarria.Content.Pets
 			Vector2 desired = Vector2.Zero;
 			float response = 0.12f;
 			switch (_cmd.Mode) {
-				case MoteMode.Escape: {
-					Vector2 away = Projectile.Center - player.Center;
-					if (away == Vector2.Zero) {
-						away = -Vector2.UnitY;
-					}
-					desired = Vector2.Normalize(away + new Vector2(_cmd.Yaw * 40, -60)) * (FollowSpeed * 1.8f);
-					break;
+			case MoteMode.Escape: {
+				// Flee the actual threat, not the owner: the brain fires Escape on
+				// any giant-fiber burst, and the bearing comes from the latest sample.
+				Vector2 away = _hasThreat && _threatOffset != Vector2.Zero
+					? -_threatOffset
+					: Projectile.Center - player.Center;
+				if (away == Vector2.Zero) {
+					away = -Vector2.UnitY;
 				}
+				desired = Vector2.Normalize(away + new Vector2(_cmd.Yaw * 40, -60)) * (FollowSpeed * 1.8f);
+				break;
+			}
+			case MoteMode.Seek: {
+				// Hungry and smells food: close on the strongest smell's sampled
+				// position. Contact flips it to FEED (higher in the ladder), which
+				// is what actually counts the meal.
+				if (_hasFood) {
+					Vector2 toFood = _foodPos - Projectile.Center;
+					desired = toFood.SafeNormalize(Vector2.UnitY) * FollowSpeed;
+				}
+				else {
+					desired = toPlayer * 0.02f;
+				}
+				break;
+			}
 				case MoteMode.Startle:
 					// Looming seen but no giant-fiber takeoff: freeze in place.
 					response = 0.35f;

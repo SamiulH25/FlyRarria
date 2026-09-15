@@ -2,7 +2,7 @@ namespace FlyRarria.Brain
 {
 	/// <summary>
 	/// Reads descending/motor population rates into a movement command.
-	/// Priority ladder (first match wins): ESCAPE > FEED > STARTLE > SONG > GROOM > FOLLOW > IDLE.
+	/// Priority ladder (first match wins): ESCAPE > FEED > STARTLE > SONG > GROOM > SEEK > FOLLOW > IDLE.
 	/// Thresholds are hand-built scaffolding; the decisions (which populations
 	/// fire) come from the wiring. Tune per circuit set in config, not in code.
 	/// Rates near a threshold flicker tick to tick, so the decoder holds a mode with
@@ -17,6 +17,7 @@ namespace FlyRarria.Brain
 		Feed,
 		Groom,
 		Song,
+		Seek,
 		Sleep,
 	}
 
@@ -37,6 +38,8 @@ namespace FlyRarria.Brain
 			public double SongPip10Hz;
 			public double SteerMinHz;
 			public double BackwardMdnHz;
+		/// <summary>Mean food-odor (ORN) rate that turns the mote toward the stronger-smelling side.</summary>
+		public double SeekOrnHz;
 			/// <summary>The current mode keeps holding down to this fraction of its entry threshold.</summary>
 			public double ReleaseFraction;
 			/// <summary>Brain ticks in a row a new mode must win before the fly switches to it. ESCAPE switches at once.</summary>
@@ -48,6 +51,7 @@ namespace FlyRarria.Brain
 				FeedMn9Hz = 35, // sugar drives MN9 ~57Hz; touch/bristles leak ~25Hz into it
 				GroomADnHz = 40,
 				SongPip10Hz = 15,
+			SeekOrnHz = 25, // odor at 60Hz drives ORNs ~70Hz; hunger-weighted full-fly ~11Hz stays out
 				SteerMinHz = 3,
 				BackwardMdnHz = 20,
 				ReleaseFraction = 0.6,
@@ -134,6 +138,17 @@ namespace FlyRarria.Brain
 				cmd.Mode = MoteMode.Groom;
 				return cmd;
 			}
+		// SEEK: hungry-weighted food odor with no contact yet — turn toward the
+		// stronger side and close in. Smell drive already carries hunger (see
+		// Encode), so a full fly never reaches this.
+		double orn = (Rate("ORN_DM1") + Rate("ORN_VA2")) * 0.5;
+		if (orn >= _t.SeekOrnHz * Scale(MoteMode.Seek)) {
+			cmd.Mode = MoteMode.Seek;
+			cmd.Forward = 1;
+			cmd.Yaw = (float)(Rate("ORN_DM1", "R") + Rate("ORN_VA2", "R")
+				- Rate("ORN_DM1", "L") - Rate("ORN_VA2", "L"));
+			return cmd;
+		}
 			TrySteer(ref cmd, Scale(MoteMode.Follow));
 			return cmd;
 		}
