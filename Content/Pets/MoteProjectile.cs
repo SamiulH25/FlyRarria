@@ -255,12 +255,16 @@ namespace FlyRarria.Content.Pets
 			}
 			// Wind: world wind only, and only outdoors. Airflow from the mote's own flight
 			// is left out (flies cancel self-motion with efference copy); feeding it in
-			// drove JO past the groom threshold at follow speed. JO tips into GROOM between
-			// 0.06 and 0.08 regardless of chase, so x0.1 grooms only in strong wind (~0.7+).
+			// drove JO past the groom threshold at follow speed. On the whole CNS, JO input
+			// 0.045-0.09 grooms in bursts and 0.1+ grooms steadily. Terraria's weather wind
+			// tops out near 0.8 (windy days from 0.34-0.4), so the curve stays under that band
+			// up to 0.6 and crosses it by ~0.66: grooming is for strong wind only.
 			if (Projectile.Center.Y / 16f < Main.worldSurface) {
-				float wind = MathHelper.Clamp(Main.windSpeedCurrent * 0.1f, -1f, 1f);
-				f.WindLeft = MathHelper.Max(wind, 0f); // blowing rightward arrives from the left
-				f.WindRight = MathHelper.Max(-wind, 0f);
+				float speed = Math.Abs(Main.windSpeedCurrent);
+				float jo = MathHelper.Clamp(speed <= 0.6f ? speed * 0.06f : 0.036f + (speed - 0.6f), 0f, 1f);
+				bool fromLeft = Main.windSpeedCurrent > 0; // blowing rightward arrives from the left
+				f.WindLeft = fromLeft ? jo : 0f;
+				f.WindRight = fromLeft ? 0f : jo;
 			}
 			f.LightLevel = Lighting.Brightness((int)(Projectile.Center.X / 16), (int)(Projectile.Center.Y / 16));
 			f.Touch = Main.raining ? 0.4f : 0f;
