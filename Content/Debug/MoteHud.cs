@@ -54,15 +54,14 @@ namespace FlyRarria.Content.Debug
 				loading = m.BrainLoading;
 				anchor = m.Projectile.Top;
 			}
-			var bond = BondSystem.Instance?.Get(player);
-			int level = bond?.Level ?? 1;
-			float hunger = bond?.Hunger ?? 0f;
+		var bond = BondSystem.Instance?.Get(player);
+		float hunger = bond?.Hunger ?? 0f;
+		string levelText = $"{bond?.Name ?? "Shy"} · Lv{bond?.Level ?? 1}";
 
 			var sb = Main.spriteBatch;
 			var font = FontAssets.MouseText.Value;
 			string modeText = mode?.ToString() ?? "Away";
 			string driveText = loading ? "loading" : reflex ? "reflex" : "brain";
-			string levelText = $"Lv{level}";
 
 			float lineH = font.MeasureString("Ay").Y * TextScale;
 			float dot = 6f;

@@ -348,7 +348,7 @@ namespace FlyRarria.Content.Pets
 		// Hearts, stars and coins near the mote but out of the owner's reach are
 		// worth fetching. Runs on the sample tick; Steer navigates to _fetchPos.
 		_hasFetch = false;
-		float best = 200;
+		float best = (BondSystem.Instance?.Get(player)?.Level ?? 1) >= 3 ? 320 : 200;
 		for (int i = 0; i < Main.maxItems; i++) {
 			Item item = Main.item[i];
 			if (!item.active || item.stack <= 0 || !IsPickup(item)) {
@@ -473,12 +473,14 @@ namespace FlyRarria.Content.Pets
 		if (bond == null) {
 			return;
 		}
+		int levelBefore = bond.Level;
 		bond.Tick(gameTicks / 3600f); // game ticks -> real-time minutes
 		// Scares bond on their own cooldown: fleeing right after a meal still counts.
 		if (--_scareCd <= 0 && _cmd.Mode == MoteMode.Escape) {
 			bond.SharedScare();
 			_scareCd = MealCooldownBrainTicks;
 		}
+		AnnounceLevelUp(player, bond, levelBefore);
 		if (--_feedCd > 0) {
 			return;
 		}
@@ -490,6 +492,15 @@ namespace FlyRarria.Content.Pets
 		else if (frame.BitterContact > 0.5f) {
 			bond.Feed(sweet: false);
 			_feedCd = MealCooldownBrainTicks;
+		}
+		AnnounceLevelUp(player, bond, levelBefore);
+	}
+
+	/// <summary>Gold text on the owner's screen when a level was gained.</summary>
+	private static void AnnounceLevelUp(Player player, global::FlyRarria.Content.Bond.Bond bond, int levelBefore)
+	{
+		if (bond.Level > levelBefore && player.whoAmI == Main.myPlayer && !Main.dedServ) {
+			CombatText.NewText(player.getRect(), new Color(255, 215, 120), $"Mote is now {bond.Name}!");
 		}
 	}
 
@@ -531,11 +542,15 @@ namespace FlyRarria.Content.Pets
 		item.Center = player.Center;
 		item.velocity = Vector2.Zero;
 		item.noGrabDelay = Math.Min(item.noGrabDelay, 30);
+		BondSystem.Instance?.Get(player)?.Reward(3);
 		if (Main.netMode != NetmodeID.SinglePlayer) {
 			NetMessage.SendData(MessageID.SyncItem, -1, -1, null, _fetchItem);
 		}
 		_hasFetch = false;
 	}
+
+	/// <summary>Shy (level 1) motes keep 1.5x distance; trust closes the gap.</summary>
+	private static float ShyRange(Player player) => (BondSystem.Instance?.Get(player)?.Level ?? 2) <= 1 ? 1.5f : 1f;
 
 		private void Steer(Player player)
 		{
@@ -562,7 +577,9 @@ namespace FlyRarria.Content.Pets
 		float response = 0.12f;
 		// Fetch: idle minds pick up after the owner. Game-side chore like the
 		// Sleep perch — the brain never sees pickups, it just has nothing on.
-		bool fetching = _hasFetch && (_cmd.Mode == MoteMode.Idle || _cmd.Mode == MoteMode.Follow);
+		// Takes trust: shy motes watch, curious ones fetch.
+		bool fetching = _hasFetch && (BondSystem.Instance?.Get(player)?.Level ?? 1) >= 2
+			&& (_cmd.Mode == MoteMode.Idle || _cmd.Mode == MoteMode.Follow);
 		if (fetching) {
 			Vector2 toFetch = _fetchPos - Projectile.Center;
 			if (toFetch.Length() < 28) {
@@ -639,11 +656,11 @@ namespace FlyRarria.Content.Pets
 						// MDN backward walking: back away from the owner.
 						desired = -Vector2.Normalize(toPlayer) * 3f;
 					}
-					else if (dist > 96) {
+					else if (dist > 96 * ShyRange(player)) {
 						// DNp09/DNg100 forward drive speeds up the approach.
 						desired = Vector2.Normalize(toPlayer) * FollowSpeed * (_cmd.Forward > 0 ? 1.3f : 1f);
 					}
-					else if (dist < 48) {
+					else if (dist < 48 * ShyRange(player)) {
 						// The buff spawns the mote exactly on the owner (dist 0): Normalize would give NaN.
 						desired = -toPlayer.SafeNormalize(Vector2.UnitY) * 2f;
 					}

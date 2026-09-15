@@ -35,6 +35,10 @@ Cut from `main` at `3d04223`. Inherits all `fly-brain.md` known issues.
   item (owner-client, synced, revalidated); idle minds fetch hearts/stars/
   coins to the owner; Song orbits the nearest company; escape smoke + groom
   water dust. No interaction stubs existed anywhere — these are all new.
+- 2026-09-15 — Bond loop closed: fetch pays +3 XP; L2 unlocks fetch (320px
+  at L3), L1 keeps 1.5x distance; level-ups announce in gold text; HUD
+  shows trust names. Earn via meals/scares/fetches; each level changes
+  behavior, not just the L4 perch.
 - 2026-09-14 — Documented intended behaviour of every `MoteMode`
   (Idle / Follow / Escape / Startle / Feed / Groom / Song / Sleep).
 - 2026-09-14 — Input-roadmap discussion: `LightLevel` sampled but never
