@@ -23,7 +23,9 @@ namespace FlyRarria.Brain
 		public float LightLevel;
 		public float Heat;
 		public float SocialCue;
+		/// <summary>Interoceptive hunger drive: 0 full .. 1 starving. Scales sugar sensing.</summary>
+		public float Hunger;
 
-		public static SensoryFrame Empty => new SensoryFrame { LightLevel = 0.5f };
+		public static SensoryFrame Empty => new SensoryFrame { LightLevel = 0.5f, Hunger = 0.2f };
 	}
 }

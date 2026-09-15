@@ -1,3 +1,8 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Threading.Tasks;
 using Microsoft.Xna.Framework;
 using Terraria;
 using Terraria.ID;
@@ -10,27 +15,81 @@ namespace FlyRarria.Content.Pets
 	/// <summary>
 	/// The companion. Vanilla pet shell (follow/teleport/keepalive) with the brain
 	/// in the decision seat: every 3rd tick the world is sampled into a SensoryFrame,
-	/// the LIF circuits step 50ms, and the decoded command steers velocity.
-	/// Until circuit data ships (Circuits/*.json), the brain resolves no populations
-	/// and the decoder reports Idle/Reflex — the pet then falls back to plain
-	/// following so it is still a working pet. No fake brain activity is ever shown.
+	/// the network steps 50ms on worker threads, and the decoded command steers velocity.
+	/// The brain is the whole male CNS when Circuits/male-cns.connectome.gz ships, else the
+	/// merged circuit JSON. It loads in the background (about a second for the whole CNS);
+	/// until then, or with no circuit data at all, the pet falls back to plain following
+	/// and the HUD says so. No fake brain activity is ever shown.
 	/// </summary>
 	public class MoteProjectile : ModProjectile
 	{
 		private const int BrainEveryTicks = 3;
 		private const float FollowSpeed = 7f;
 		private const float TeleportTiles = 25f;
+		private const int MealCooldownBrainTicks = 10 * 60 / BrainEveryTicks; // ~10s; _feedCd counts brain ticks
 
+		/// <summary>Threads stepping the brain: most cores, leaving some to the game.</summary>
+		private static int BrainShards => Math.Clamp(Environment.ProcessorCount * 3 / 4, 1, 12);
+
+		private sealed class BrainParts
+		{
+			public Connectome Graph;
+			public LifNetwork Net;
+			public PopulationIndex Pops;
+		}
+
+		private Task<BrainParts> _brainLoad;
 		private LifNetwork _net;
 		private PopulationIndex _pops;
 		private MotorDecoder _decoder;
-		private MotorCommand _cmd;
-		private int _tick;
+		private MotorCommand _cmd = new MotorCommand { Mode = MoteMode.Follow, Reflex = true };
+		private int _ticksSinceBrainStart = BrainEveryTicks - 1;
+		/// <summary>The brain step running on worker threads, or null while the network is idle.</summary>
+		private Task _brainStep;
+		private SensoryFrame _stepFrame;
+		private List<(string type, string side, double hz)> _stepDrives;
+		private int _stepGameTicks = BrainEveryTicks;
+		private double _stepMs; // written by the step's worker, read once it's done
 		private bool _brainLoaded;
 		private int _feedCd;
+		private float _damageFlash;
+		private int _lastLife = -1;
 
 		public MoteMode CurrentMode => _cmd.Mode;
 		public bool BrainReflex => _cmd.Reflex;
+		/// <summary>True until the background brain load finishes.</summary>
+		public bool BrainLoading => _net == null;
+		/// <summary>The loaded circuit graph, or null while loading or running the [reflex] fallback.</summary>
+		public Connectome Graph { get; private set; }
+		/// <summary>
+		/// The live network. It steps on worker threads, so read <see cref="LastSpikes"/> rather
+		/// than its spike list; its rates are only written at the end of a step and are fine to display.
+		/// </summary>
+		public LifNetwork Net => _net;
+		public PopulationIndex Pops => _pops;
+		/// <summary>Brain steps finished so far; LastSpikes belongs to the latest one.</summary>
+		public int BrainTicks { get; private set; }
+		/// <summary>Every spike of the latest finished brain step, copied so the next step can run.</summary>
+		public int[] LastSpikes { get; private set; } = new int[0];
+		/// <summary>The sensory drives applied on the latest brain step.</summary>
+		public IReadOnlyList<(string type, string side, double hz)> LastDrives { get; private set; } = new List<(string, string, double)>();
+		/// <summary>Wall-clock time of the latest 50 ms brain step.</summary>
+		public double LastStepMs { get; private set; }
+		/// <summary>Brain time over game time, smoothed: below 1 when steps overrun their 3 ticks.</summary>
+		public double RealTimeFactor { get; private set; } = 1;
+
+		/// <summary>The player's active mote, or null.</summary>
+		public static MoteProjectile FindFor(Player player)
+		{
+			for (int i = 0; i < Main.maxProjectiles; i++) {
+				var p = Main.projectile[i];
+				if (p.active && p.type == ModContent.ProjectileType<MoteProjectile>()
+					&& p.owner == player.whoAmI && p.ModProjectile is MoteProjectile m) {
+					return m;
+				}
+			}
+			return null;
+		}
 
 		public override void SetStaticDefaults()
 		{
@@ -60,17 +119,44 @@ namespace FlyRarria.Content.Pets
 
 			EnsureBrain();
 
-			if (_tick++ % BrainEveryTicks == 0) {
-				var frame = SampleWorld(player);
-				var drives = SensoryEncoders.Encode(frame);
-				SensoryEncoders.Apply(_net, _pops, drives);
-				_net.Step(100); // 100 x 0.5ms = 50ms brain time
-				_cmd = _decoder.Decode(brainDriven: _brainLoaded);
-				TendBond(player, frame);
+			// A busy whole-brain step mustn't stall the frame, so it runs on workers and its
+			// result lands the first frame after it finishes. A step that overruns its 3 ticks
+			// delays the next one: the brain runs slower than real time instead of the game.
+			if (_net != null) {
+				if (_brainStep?.IsCompleted == true) {
+					FinishBrainStep(player);
+				}
+				if (++_ticksSinceBrainStart >= BrainEveryTicks && _brainStep == null) {
+					_stepFrame = SampleWorld(player);
+					_stepDrives = SensoryEncoders.Encode(_stepFrame);
+					SensoryEncoders.Apply(_net, _pops, _stepDrives);
+					_stepGameTicks = _ticksSinceBrainStart;
+					_ticksSinceBrainStart = 0;
+					LifNetwork net = _net;
+					_brainStep = Task.Run(() => {
+						var clock = Stopwatch.StartNew();
+						net.Step(100); // 100 x 0.5ms = 50ms brain time
+						_stepMs = clock.Elapsed.TotalMilliseconds;
+					});
+				}
 			}
 
 			Steer(player);
 			Animate();
+		}
+
+		private void FinishBrainStep(Player player)
+		{
+			Task step = _brainStep;
+			_brainStep = null;
+			step.GetAwaiter().GetResult(); // a failed step throws here, on the game thread
+			LastSpikes = _net.SpikesThisTick.ToArray();
+			LastDrives = _stepDrives;
+			LastStepMs = _stepMs;
+			RealTimeFactor += 0.2 * ((double)BrainEveryTicks / Math.Max(BrainEveryTicks, _stepGameTicks) - RealTimeFactor);
+			BrainTicks++;
+			_cmd = _decoder.Decode(brainDriven: _brainLoaded);
+			TendBond(player, _stepFrame, _stepGameTicks);
 		}
 
 		private void EnsureBrain()
@@ -78,16 +164,50 @@ namespace FlyRarria.Content.Pets
 			if (_net != null) {
 				return;
 			}
-			// Real circuit data when embedded (Circuits/*.json); otherwise an empty
-			// graph so the pet stays a working follower and the HUD reports [reflex].
-			Connectome graph = CircuitLoader.TryLoadAll();
-			_brainLoaded = graph != null;
-			graph ??= new Connectome(0, new int[0], new int[0], new ushort[0],
-				new sbyte[0], new string[0], new int[0], new double[0], new double[0]);
-			_net = new LifNetwork(graph, 0.5, LifNetwork.Params.Shiu2024());
-			_pops = new PopulationIndex(graph);
+			_brainLoad ??= Task.Run(() => BuildBrain(CircuitLoader.LoadShared(out var parameters), parameters));
+			if (!_brainLoad.IsCompleted) {
+				return; // following on reflex meanwhile
+			}
+			BrainParts parts;
+			try {
+				parts = _brainLoad.GetAwaiter().GetResult();
+			}
+			catch (Exception e) {
+				Mod.Logger.Error("brain failed to load, running [reflex]", e);
+				parts = BuildBrain(null, LifNetwork.Params.Shiu2024());
+			}
+			_brainLoaded = parts.Graph != null;
+			Graph = parts.Graph;
+			_net = parts.Net;
+			_pops = parts.Pops;
 			_decoder = new MotorDecoder(_net, _pops, MotorDecoder.Thresholds.Default);
 			_cmd = new MotorCommand { Mode = MoteMode.Follow, Reflex = !_brainLoaded };
+		}
+
+		/// <summary>
+		/// A network over <paramref name="graph"/>, or over an empty graph when it's null so the pet
+		/// stays a working follower and the HUD reports [reflex].
+		/// </summary>
+		private static BrainParts BuildBrain(Connectome graph, LifNetwork.Params parameters)
+		{
+			Connectome g = graph ?? new Connectome(0, new int[0], new int[0], new ushort[0],
+				new sbyte[0], new string[0], new int[0], new double[0], new double[0]);
+			var parts = new BrainParts {
+				Graph = graph,
+				Net = new LifNetwork(g, 0.5, parameters, shards: BrainShards),
+				Pops = new PopulationIndex(g),
+			};
+			// Resolve every population the encoders, decoder and neuroscope use now, off the game
+			// thread: each new lookup scans every neuron's type, and later ones are cache hits.
+			foreach (var (type, side, _) in SensoryEncoders.Encode(SensoryEncoders.EveryChannel)) {
+				parts.Pops.Resolve(type, side);
+			}
+			foreach (var (type, side) in MotorDecoder.Readouts) {
+				parts.Pops.Resolve(type, side);
+			}
+			parts.Pops.Resolve("LC4"); // STARTLE reads the loom detectors on both sides
+			parts.Pops.Resolve("LPLC2");
+			return parts;
 		}
 
 		private SensoryFrame SampleWorld(Player player)
@@ -96,9 +216,10 @@ namespace FlyRarria.Content.Pets
 			Vector2 toPlayer = player.Center - Projectile.Center;
 			float dist = toPlayer.Length();
 
-			// Chase: the owner is the target when far, on the side they are on.
-			if (dist > 120) {
-				float side = MathHelper.Clamp(toPlayer.X / 60f, 0f, 1f);
+			// Chase: the owner is LC10a's target when far or on the move, on the side
+			// they are on. Close and still reads as nothing to chase, so the brain rests.
+			if (dist > 120 || player.velocity.Length() > 1f) {
+				float side = MathHelper.Clamp(System.Math.Abs(toPlayer.X) / 60f, 0.3f, 1f);
 				if (toPlayer.X < 0) {
 					f.ChaseLeft = side;
 				}
@@ -132,14 +253,62 @@ namespace FlyRarria.Content.Pets
 			else {
 				f.LoomRight = worst;
 			}
-			f.WindLeft = MathHelper.Clamp(-Projectile.velocity.X / 12f, 0f, 1f);
-			f.WindRight = MathHelper.Clamp(Projectile.velocity.X / 12f, 0f, 1f);
+			// Wind: world wind only, and only outdoors. Airflow from the mote's own flight
+			// is left out (flies cancel self-motion with efference copy); feeding it in
+			// drove JO past the groom threshold at follow speed. On the whole CNS, JO input
+			// 0.045-0.09 grooms in bursts and 0.1+ grooms steadily. Terraria's weather wind
+			// tops out near 0.8 (windy days from 0.34-0.4), so the curve stays under that band
+			// up to 0.6 and crosses it by ~0.66: grooming is for strong wind only.
+			if (Projectile.Center.Y / 16f < Main.worldSurface) {
+				float speed = Math.Abs(Main.windSpeedCurrent);
+				float jo = MathHelper.Clamp(speed <= 0.6f ? speed * 0.06f : 0.036f + (speed - 0.6f), 0f, 1f);
+				bool fromLeft = Main.windSpeedCurrent > 0; // blowing rightward arrives from the left
+				f.WindLeft = fromLeft ? jo : 0f;
+				f.WindRight = fromLeft ? 0f : jo;
+			}
 			f.LightLevel = Lighting.Brightness((int)(Projectile.Center.X / 16), (int)(Projectile.Center.Y / 16));
 			f.Touch = Main.raining ? 0.4f : 0f;
 			ScanFood(player, ref f);
 			f.SocialCue = CountCompany(player) > 0 ? 0.6f : 0f;
 			f.Heat = player.HasBuff(BuffID.Burning) || player.HasBuff(BuffID.OnFire) ? 1f : 0f;
+			ScanSmallObjects(ref f);
+
+			// Owner hurt: a bristle flash that fades over ~0.5s.
+			if (_lastLife >= 0 && player.statLife < _lastLife) {
+				_damageFlash = 1f;
+			}
+			else {
+				_damageFlash *= 0.75f;
+			}
+			_lastLife = player.statLife;
+			f.DamageFlash = _damageFlash;
+
+			// Interoception: the bond's hunger scales sugar sensing (SensoryEncoders.SugarGain).
+			f.Hunger = BondSystem.Instance?.Get(player).Need ?? SensoryFrame.Empty.Hunger;
 			return f;
+		}
+
+		private void ScanSmallObjects(ref SensoryFrame f)
+		{
+			// Small moving things (critters, bees, ...) are LC11's preferred stimulus.
+			for (int i = 0; i < Main.maxNPCs; i++) {
+				NPC npc = Main.npc[i];
+				if (!npc.active || npc.width > 24 || npc.height > 24) {
+					continue;
+				}
+				Vector2 d = npc.Center - Projectile.Center;
+				float dist = d.Length();
+				if (dist > 320) {
+					continue;
+				}
+				float s = MathHelper.Clamp(npc.velocity.Length() / 3f, 0f, 1f) * (1f - dist / 320f);
+				if (d.X < 0) {
+					f.SmallObjectLeft = MathHelper.Max(f.SmallObjectLeft, s);
+				}
+				else {
+					f.SmallObjectRight = MathHelper.Max(f.SmallObjectRight, s);
+				}
+			}
 		}
 
 		private void ScanFood(Player player, ref SensoryFrame f)
@@ -183,8 +352,8 @@ namespace FlyRarria.Content.Pets
 				return true;
 			}
 			return item.buffType == BuffID.WellFed
-				|| item.buffType == BuffID.PlentySatisfied
-				|| item.buffType == BuffID.ExquisitelyStuffed;
+				|| item.buffType == BuffID.WellFed2
+				|| item.buffType == BuffID.WellFed3;
 		}
 
 		private static bool IsBitter(Item item)
@@ -192,8 +361,7 @@ namespace FlyRarria.Content.Pets
 			return item.type == ItemID.RottenChunk
 				|| item.type == ItemID.Vertebrae
 				|| item.type == ItemID.Stinger
-				|| item.type == ItemID.SpiderFang
-				|| item.type == ItemID.Pufferfish;
+				|| item.type == ItemID.SpiderFang;
 		}
 
 		private static int CountCompany(Player player)
@@ -209,26 +377,27 @@ namespace FlyRarria.Content.Pets
 			return n;
 		}
 
-		private void TendBond(Player player, SensoryFrame frame)
+		private void TendBond(Player player, SensoryFrame frame, int gameTicks)
 		{
-			if (--_feedCd > 0) {
-				return;
-			}
 			var bond = BondSystem.Instance?.Get(player);
 			if (bond == null) {
 				return;
 			}
+			bond.Tick(gameTicks / 3600f); // game ticks -> real-time minutes
+			if (--_feedCd > 0) {
+				return;
+			}
 			if (frame.SugarContact > 0.5f && _cmd.Mode == MoteMode.Feed) {
 				bond.Feed(sweet: true);
-				_feedCd = 600; // ~10s between counted meals
+				_feedCd = MealCooldownBrainTicks;
 			}
 			else if (frame.BitterContact > 0.5f) {
 				bond.Feed(sweet: false);
-				_feedCd = 600;
+				_feedCd = MealCooldownBrainTicks;
 			}
 			else if (_cmd.Mode == MoteMode.Escape) {
 				bond.SharedScare();
-				_feedCd = 600;
+				_feedCd = MealCooldownBrainTicks;
 			}
 		}
 
@@ -237,7 +406,10 @@ namespace FlyRarria.Content.Pets
 			Vector2 toPlayer = player.Center - Projectile.Center;
 			float dist = toPlayer.Length();
 
-			if (dist > TeleportTiles * 16) {
+			// A NaN position fails every distance test, so it also has to trigger the teleport,
+			// or the mote (and the HUD anchored to it) vanishes for good.
+			bool lost = !float.IsFinite(dist) || !float.IsFinite(Projectile.velocity.X) || !float.IsFinite(Projectile.velocity.Y);
+			if (lost || dist > TeleportTiles * 16) {
 				Projectile.Center = player.Center + new Vector2(0, -48);
 				Projectile.velocity = Vector2.Zero;
 				return;
@@ -251,6 +423,7 @@ namespace FlyRarria.Content.Pets
 			}
 
 			Vector2 desired = Vector2.Zero;
+			float response = 0.12f;
 			switch (_cmd.Mode) {
 				case MoteMode.Escape: {
 					Vector2 away = Projectile.Center - player.Center;
@@ -260,17 +433,27 @@ namespace FlyRarria.Content.Pets
 					desired = Vector2.Normalize(away + new Vector2(_cmd.Yaw * 40, -60)) * (FollowSpeed * 1.8f);
 					break;
 				}
+				case MoteMode.Startle:
+					// Looming seen but no giant-fiber takeoff: freeze in place.
+					response = 0.35f;
+					break;
 				case MoteMode.Feed:
 				case MoteMode.Groom:
 				case MoteMode.Song:
 					desired = toPlayer * 0.02f;
 					break;
 				default: {
-					if (dist > 96) {
-						desired = Vector2.Normalize(toPlayer) * FollowSpeed;
+					if (_cmd.Forward < 0 && dist > 1) {
+						// MDN backward walking: back away from the owner.
+						desired = -Vector2.Normalize(toPlayer) * 3f;
+					}
+					else if (dist > 96) {
+						// DNp09/DNg100 forward drive speeds up the approach.
+						desired = Vector2.Normalize(toPlayer) * FollowSpeed * (_cmd.Forward > 0 ? 1.3f : 1f);
 					}
 					else if (dist < 48) {
-						desired = -Vector2.Normalize(toPlayer) * 2f;
+						// The buff spawns the mote exactly on the owner (dist 0): Normalize would give NaN.
+						desired = -toPlayer.SafeNormalize(Vector2.UnitY) * 2f;
 					}
 					if (_cmd.Yaw != 0) {
 						desired += new Vector2(MathHelper.Clamp(_cmd.Yaw / 10f, -2f, 2f), 0);
@@ -279,7 +462,7 @@ namespace FlyRarria.Content.Pets
 				}
 			}
 
-			Projectile.velocity = Vector2.Lerp(Projectile.velocity, desired, 0.12f);
+			Projectile.velocity = Vector2.Lerp(Projectile.velocity, desired, response);
 			if (BondSystem.Instance?.IsAsleep(player) == true) {
 				Projectile.velocity *= 0.9f;
 			}

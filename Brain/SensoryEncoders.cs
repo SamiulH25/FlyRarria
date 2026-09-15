@@ -18,6 +18,22 @@ namespace FlyRarria.Brain
 			return rMax * p / (c + p);
 		}
 
+		/// <summary>
+		/// Sugar GRN gain from hunger (0 full .. 1 starving), as starvation raises
+		/// sugar-neuron sensitivity in real flies. 1.0 at 0.2 (a new bond's default and
+		/// SensoryFrame.Empty), so the bench-verified sugar response is unchanged there.
+		/// Steep below that: depression in the whole CNS compresses MN9, so a full fly needs
+		/// 0.2 to stay near silent (MN9 ~14 Hz, vs ~26 Hz at the old 0.6, which still fed).
+		/// </summary>
+		public static double SugarGain(float hunger) => Math.Min(1.5, 0.2 + 4.0 * Math.Clamp(hunger, 0f, 1f));
+
+		/// <summary>A frame with every channel on, so <see cref="Encode"/> lists every population it can drive.</summary>
+		public static SensoryFrame EveryChannel => new SensoryFrame {
+			LoomLeft = 1, LoomRight = 1, ChaseLeft = 1, ChaseRight = 1, SmallObjectLeft = 1, SmallObjectRight = 1,
+			SugarContact = 1, BitterContact = 1, FoodSmell = 1, WindLeft = 1, WindRight = 1, Touch = 1,
+			DamageFlash = 1, LightLevel = 1, Heat = 1, SocialCue = 1, Hunger = 1,
+		};
+
 		public static List<(string type, string side, double hz)> Encode(SensoryFrame f)
 		{
 			var drives = new List<(string, string, double)>();
@@ -39,11 +55,13 @@ namespace FlyRarria.Brain
 			Add("LC11", f.SmallObjectLeft, 100, "L");
 			Add("LC11", f.SmallObjectRight, 100, "R");
 
-			// Taste: contact only.
-			Add("LB3b", f.SugarContact, 120);
-			Add("LB3c", f.SugarContact, 120);
-			Add("PhG1a", f.SugarContact, 100);
-			Add("LgLG3", f.SugarContact, 80);
+			// Taste: contact only. Hunger turns sugar sensing up, satiety turns it down;
+			// whether that is enough to drive MN9 past the feed threshold is the circuit's call.
+			double sweet = SugarGain(f.Hunger);
+			Add("LB3b", f.SugarContact, 120 * sweet);
+			Add("LB3c", f.SugarContact, 120 * sweet);
+			Add("PhG1a", f.SugarContact, 100 * sweet);
+			Add("LgLG3", f.SugarContact, 80 * sweet);
 			Add("LB1a", f.BitterContact, 120);
 			Add("LB1b", f.BitterContact, 120);
 
@@ -52,11 +70,13 @@ namespace FlyRarria.Brain
 			Add("ORN_VA2", f.FoodSmell, 60);
 
 			// Mechano: wind splits by side; touch/damage drive bristles + grooming JO.
-			Add("JO Wind", f.WindLeft, 120, "L");
-			Add("JO Wind", f.WindRight, 120, "R");
-			Add("JO-F", f.Touch, 120);
-			Add("Bristle", f.Touch, 100);
-			Add("Bristle", f.DamageFlash, 200);
+			Add("prefix:JO-C", f.WindLeft, 120, "L"); // JO-C/E: static antennal deflection (wind)
+			Add("prefix:JO-E", f.WindLeft, 120, "L");
+			Add("prefix:JO-C", f.WindRight, 120, "R");
+			Add("prefix:JO-E", f.WindRight, 120, "R");
+			Add("JO-FV", f.Touch, 120);
+			Add("BM_InOm", f.Touch, 100);
+			Add("BM_InOm", f.DamageFlash, 200);
 
 			// Thermo + social flavor.
 			Add("TRN_VP2", f.Heat, 100);
