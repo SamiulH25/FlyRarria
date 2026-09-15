@@ -61,6 +61,13 @@ namespace FlyRarria.Content.Pets
 	/// <summary>Strongest food smell's position at the last sample, so SEEK has somewhere to go.</summary>
 	private Vector2 _foodPos;
 	private bool _hasFood;
+	/// <summary>Dropped sweet the meal was tasted from; eaten when the meal counts.</summary>
+	private int _mealItem = -1;
+	private float _mealDist;
+	/// <summary>Nearest pickup worth fetching, for idle minds.</summary>
+	private Vector2 _fetchPos;
+	private int _fetchItem = -1;
+	private bool _hasFetch;
 
 		public MoteMode CurrentMode => _cmd.Mode;
 		public bool BrainReflex => _cmd.Reflex;
@@ -296,6 +303,7 @@ namespace FlyRarria.Content.Pets
 			f.SocialCue = CountCompany(player) > 0 ? 0.6f : 0f;
 			f.Heat = player.HasBuff(BuffID.Burning) || player.HasBuff(BuffID.OnFire) ? 1f : 0f;
 			ScanSmallObjects(ref f);
+		ScanPickups(player);
 
 			// Owner hurt: a bristle flash that fades over ~0.5s.
 			if (_lastLife >= 0 && player.statLife < _lastLife) {
@@ -335,12 +343,41 @@ namespace FlyRarria.Content.Pets
 			}
 		}
 
+	private void ScanPickups(Player player)
+	{
+		// Hearts, stars and coins near the mote but out of the owner's reach are
+		// worth fetching. Runs on the sample tick; Steer navigates to _fetchPos.
+		_hasFetch = false;
+		float best = 200;
+		for (int i = 0; i < Main.maxItems; i++) {
+			Item item = Main.item[i];
+			if (!item.active || item.stack <= 0 || !IsPickup(item)) {
+				continue;
+			}
+			if (Vector2.Distance(item.Center, player.Center) < 48) {
+				continue; // the owner grabs those anyway
+			}
+			float dm = Vector2.Distance(item.Center, Projectile.Center);
+			if (dm < best) {
+				best = dm;
+				_fetchPos = item.Center;
+				_fetchItem = i;
+				_hasFetch = true;
+			}
+		}
+	}
+
+	private static bool IsPickup(Item item) => item.type == ItemID.Heart || item.type == ItemID.Star
+		|| item.type == ItemID.CopperCoin || item.type == ItemID.SilverCoin
+		|| item.type == ItemID.GoldCoin || item.type == ItemID.PlatinumCoin;
+
 	private void ScanFood(Player player, ref SensoryFrame f)
 	{
 		// Dropped items near the mote: smell in a wide radius (split by side so
 		// the brain can turn toward it), taste on contact. Tracks the strongest
 		// smell's position so SEEK has somewhere to go.
 		_hasFood = false;
+		_mealItem = -1;
 		float best = 0;
 		for (int i = 0; i < Main.maxItems; i++) {
 			Item item = Main.item[i];
@@ -362,10 +399,14 @@ namespace FlyRarria.Content.Pets
 					_hasFood = true;
 				}
 			}
-			if (d < 40) {
-				if (IsSweet(item)) {
-					f.SugarContact = 1f;
+		if (d < 40) {
+			if (IsSweet(item)) {
+				f.SugarContact = 1f;
+				if (_mealItem < 0 || d < _mealDist) {
+					_mealItem = i;
+					_mealDist = d;
 				}
+			}
 				if (IsBitter(item)) {
 					f.BitterContact = 1f;
 				}
@@ -444,11 +485,56 @@ namespace FlyRarria.Content.Pets
 		if (frame.SugarContact > 0.5f && _cmd.Mode == MoteMode.Feed) {
 			bond.Feed(sweet: true);
 			_feedCd = MealCooldownBrainTicks;
+			EatMealItem(player);
 		}
 		else if (frame.BitterContact > 0.5f) {
 			bond.Feed(sweet: false);
 			_feedCd = MealCooldownBrainTicks;
 		}
+	}
+
+	/// <summary>Eats the sweet item the meal was tasted from (dropped only; hand-fed
+	/// is a free nibble). Owner-client only, synced, revalidated: the brain tick lags.</summary>
+	private void EatMealItem(Player player)
+	{
+		if (Projectile.owner != Main.myPlayer || _mealItem < 0 || _mealItem >= Main.maxItems) {
+			return;
+		}
+		Item item = Main.item[_mealItem];
+		if (!item.active || item.stack <= 0 || !IsSweet(item)
+			|| Vector2.Distance(item.Center, Projectile.Center) > 60) {
+			return;
+		}
+		if (--item.stack <= 0) {
+			item.TurnToAir();
+		}
+		if (Main.netMode != NetmodeID.SinglePlayer) {
+			NetMessage.SendData(MessageID.SyncItem, -1, -1, null, _mealItem);
+		}
+		_mealItem = -1;
+	}
+
+	/// <summary>Hands the fetched pickup to the owner by moving it onto them; vanilla
+	/// pickup does the rest. Owner-client only and synced.</summary>
+	private void GiveFetchTo(Player player)
+	{
+		if (Projectile.owner != Main.myPlayer || !_hasFetch) {
+			return;
+		}
+		if (_fetchItem < 0 || _fetchItem >= Main.maxItems) {
+			return;
+		}
+		Item item = Main.item[_fetchItem];
+		if (!item.active || item.stack <= 0 || !IsPickup(item)) {
+			return;
+		}
+		item.Center = player.Center;
+		item.velocity = Vector2.Zero;
+		item.noGrabDelay = Math.Min(item.noGrabDelay, 30);
+		if (Main.netMode != NetmodeID.SinglePlayer) {
+			NetMessage.SendData(MessageID.SyncItem, -1, -1, null, _fetchItem);
+		}
+		_hasFetch = false;
 	}
 
 		private void Steer(Player player)
@@ -472,9 +558,21 @@ namespace FlyRarria.Content.Pets
 				return;
 			}
 
-			Vector2 desired = Vector2.Zero;
-			float response = 0.12f;
-			switch (_cmd.Mode) {
+		Vector2 desired = Vector2.Zero;
+		float response = 0.12f;
+		// Fetch: idle minds pick up after the owner. Game-side chore like the
+		// Sleep perch — the brain never sees pickups, it just has nothing on.
+		bool fetching = _hasFetch && (_cmd.Mode == MoteMode.Idle || _cmd.Mode == MoteMode.Follow);
+		if (fetching) {
+			Vector2 toFetch = _fetchPos - Projectile.Center;
+			if (toFetch.Length() < 28) {
+				GiveFetchTo(player);
+			}
+			else {
+				desired = toFetch.SafeNormalize(Vector2.UnitY) * FollowSpeed;
+			}
+		}
+		else switch (_cmd.Mode) {
 			case MoteMode.Escape: {
 				// Flee the actual threat, not the owner: the brain fires Escape on
 				// any giant-fiber burst, and the bearing comes from the latest sample.
@@ -516,12 +614,26 @@ namespace FlyRarria.Content.Pets
 				desired = new Vector2(shimmy, 0);
 				break;
 			}
-			case MoteMode.Song: {
-				// Courtship dance: slow orbit around the owner.
-				Vector2 dir = toPlayer.SafeNormalize(Vector2.UnitY);
-				desired = new Vector2(-dir.Y, dir.X) * 2f + toPlayer * 0.01f;
-				break;
+		case MoteMode.Song: {
+			// Courtship dance: slow orbit around the nearest company, else the owner.
+			Vector2 stage = player.Center;
+			float nearest = 25 * 16;
+			for (int i = 0; i < Main.maxPlayers; i++) {
+				Player p = Main.player[i];
+				if (!p.active || p.dead || i == player.whoAmI) {
+					continue;
+				}
+				float d = Vector2.Distance(p.Center, Projectile.Center);
+				if (d < nearest) {
+					nearest = d;
+					stage = p.Center;
+				}
 			}
+			Vector2 toStage = stage - Projectile.Center;
+			Vector2 dir = toStage.SafeNormalize(Vector2.UnitY);
+			desired = new Vector2(-dir.Y, dir.X) * 2f + toStage * 0.01f;
+			break;
+		}
 				default: {
 					if (_cmd.Forward < 0 && dist > 1) {
 						// MDN backward walking: back away from the owner.
@@ -556,7 +668,15 @@ namespace FlyRarria.Content.Pets
 				Projectile.frame = (Projectile.frame + 1) % Main.projFrames[Type];
 			}
 			Projectile.spriteDirection = Projectile.velocity.X < 0 ? -1 : 1;
-			Projectile.rotation = MathHelper.Clamp(Projectile.velocity.X * 0.03f, -0.3f, 0.3f);
+		Projectile.rotation = MathHelper.Clamp(Projectile.velocity.X * 0.03f, -0.3f, 0.3f);
+		if (!Main.dedServ) {
+			if (_cmd.Mode == MoteMode.Escape && Main.rand.NextBool(6)) {
+				Dust.NewDust(Projectile.position, Projectile.width, Projectile.height, DustID.Smoke);
+			}
+			else if (_cmd.Mode == MoteMode.Groom && Main.rand.NextBool(24)) {
+				Dust.NewDust(Projectile.position, Projectile.width, Projectile.height, DustID.Water);
+			}
+		}
 		}
 	}
 }

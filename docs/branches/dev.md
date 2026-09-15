@@ -31,6 +31,10 @@ Cut from `main` at `3d04223`. Inherits all `fly-brain.md` known issues.
   open: SONG trigger (VA1v does not reach pIP10; top afferent aIPg7's drivers
   unknown), Sleep stays game-side, damage grooms instead of alarming,
   fallback lacks LC10a/pIP10/ORN_VA1v/TRN_VP2 (dead on fallback).
+- 2026-09-15 — World interactions: counted sweet meals consume the dropped
+  item (owner-client, synced, revalidated); idle minds fetch hearts/stars/
+  coins to the owner; Song orbits the nearest company; escape smoke + groom
+  water dust. No interaction stubs existed anywhere — these are all new.
 - 2026-09-14 — Documented intended behaviour of every `MoteMode`
   (Idle / Follow / Escape / Startle / Feed / Groom / Song / Sleep).
 - 2026-09-14 — Input-roadmap discussion: `LightLevel` sampled but never
