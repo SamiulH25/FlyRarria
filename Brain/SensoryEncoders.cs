@@ -26,6 +26,13 @@ namespace FlyRarria.Brain
 		/// 0.2 to stay near silent (MN9 ~14 Hz, vs ~26 Hz at the old 0.6, which still fed).
 		/// </summary>
 		public static double SugarGain(float hunger) => Math.Min(1.5, 0.2 + 4.0 * Math.Clamp(hunger, 0f, 1f));
+		/// <summary>
+		/// Ambient-light gate on vision (flies are diurnal): 1.0 in daylight down to
+		/// 0.2 in the dark. Escape still fires at night — the giant-fiber path is a
+		/// hair-trigger by design — but tracking (chase, small objects) weakens a lot.
+		/// Gives the sampled-but-unused LightLevel a real effect.
+		/// </summary>
+		public static double VisionGain(float light) => 0.2 + 0.8 * Math.Clamp(light, 0f, 1f);
 
 		/// <summary>A frame with every channel on, so <see cref="Encode"/> lists every population it can drive.</summary>
 		public static SensoryFrame EveryChannel => new SensoryFrame {
@@ -44,16 +51,18 @@ namespace FlyRarria.Brain
 				}
 			}
 
-			// Vision: analytic feature channels (the LIF medulla stays silent, same
-			// documented limitation as the Minecraft mod — drive LC/LPLC directly).
-			Add("LC4", f.LoomLeft, 150, "L");
-			Add("LC4", f.LoomRight, 150, "R");
-			Add("LPLC2", f.LoomLeft, 150, "L");
-			Add("LPLC2", f.LoomRight, 150, "R");
-			Add("LC10a", f.ChaseLeft, 120, "L");
-			Add("LC10a", f.ChaseRight, 120, "R");
-			Add("LC11", f.SmallObjectLeft, 100, "L");
-			Add("LC11", f.SmallObjectRight, 100, "R");
+		// Vision: analytic feature channels (the LIF medulla stays silent, same
+		// documented limitation as the Minecraft mod — drive LC/LPLC directly).
+		// Gated by ambient light: the fly sees full contrast by day, little at night.
+		double vision = VisionGain(f.LightLevel);
+		Add("LC4", f.LoomLeft, 150 * vision, "L");
+		Add("LC4", f.LoomRight, 150 * vision, "R");
+		Add("LPLC2", f.LoomLeft, 150 * vision, "L");
+		Add("LPLC2", f.LoomRight, 150 * vision, "R");
+		Add("LC10a", f.ChaseLeft, 120 * vision, "L");
+		Add("LC10a", f.ChaseRight, 120 * vision, "R");
+		Add("LC11", f.SmallObjectLeft, 100 * vision, "L");
+		Add("LC11", f.SmallObjectRight, 100 * vision, "R");
 
 			// Taste: contact only. Hunger turns sugar sensing up, satiety turns it down;
 			// whether that is enough to drive MN9 past the feed threshold is the circuit's call.

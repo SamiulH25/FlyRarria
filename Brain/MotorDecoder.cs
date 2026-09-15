@@ -93,11 +93,13 @@ namespace FlyRarria.Brain
 				_pendingTicks = 0;
 				return read;
 			}
-			var held = new MotorCommand { Mode = _mode, Reflex = read.Reflex };
-			if (_mode == MoteMode.Follow && !TrySteer(ref held, _t.ReleaseFraction)) {
-				held.Yaw = (float)(Rate("DNa02", "R") - Rate("DNa02", "L"));
-			}
-			return held;
+		var held = new MotorCommand { Mode = _mode, Reflex = read.Reflex };
+		if (_mode == MoteMode.Follow) {
+			// TrySteer at release scale keeps real steering while the switch confirms;
+			// on failure yaw stays 0 so EMA residue never steers the mote.
+			TrySteer(ref held, _t.ReleaseFraction);
+		}
+		return held;
 		}
 
 		/// <summary>One tick's reading of the ladder; <paramref name="current"/> gets the lower release thresholds.</summary>
@@ -115,10 +117,14 @@ namespace FlyRarria.Brain
 				cmd.Mode = MoteMode.Feed;
 				return cmd;
 			}
-			if (Rate("LC4") + Rate("LPLC2") > 60 * Scale(MoteMode.Startle)) {
-				cmd.Mode = MoteMode.Startle;
-				return cmd;
-			}
+		// STARTLE: looming seen without giant-fiber takeoff, or a small moving
+		// thing (LC11) worth freezing to watch. LC11 never bursts DNp01, so
+		// Escape can't shadow it the way it shadows the loom clause.
+		if (Rate("LC4") + Rate("LPLC2") > 60 * Scale(MoteMode.Startle)
+			|| Rate("LC11") > 40 * Scale(MoteMode.Startle)) {
+			cmd.Mode = MoteMode.Startle;
+			return cmd;
+		}
 			if (Rate("pIP10") >= _t.SongPip10Hz * Scale(MoteMode.Song)) {
 				cmd.Mode = MoteMode.Song;
 				return cmd;

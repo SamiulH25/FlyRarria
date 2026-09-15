@@ -38,6 +38,20 @@ import numpy as np
 from scipy import sparse
 
 SIGN_NEG = {"gaba", "glutamate", "glut", "histamine", "hist"}
+
+
+def saturate(s, r_max):
+    """Mirror of Brain/SensoryEncoders.Saturate: encounters matter more than levels."""
+    p = max(0.0, s) ** 1.5
+    c = 0.2 ** 1.5
+    return r_max * p / (c + p)
+
+
+def vision_gain(light):
+    """Mirror of Brain/SensoryEncoders.VisionGain: 1.0 by day, 0.2 in the dark."""
+    return 0.2 + 0.8 * min(1.0, max(0.0, light))
+
+
 # Modulatory transmitters act through G-protein receptors, not fast synapses (Connectome.SignForTransmitter).
 SIGN_ZERO = {"dopamine", "octopamine", "serotonin"}
 
@@ -270,6 +284,30 @@ def experiment(net: CircuitNet, name: str):
         gf = net.rate("DNp01")
         ok = gf > 100 and not np.isnan(gf)
         return ok, f"DNp01={gf:.0f}Hz (want burst >100)"
+    if name == "night":
+        # Tracking in the dark: the C# encoders scale visual rMax by vision_gain,
+        # so a chase drives LC10a at saturate(1, 120*g) instead of saturate(1, 120).
+        # Assert the dark yaw is weaker than the day yaw but still tracks left.
+        net.reset()
+        net.drive("LC10a", saturate(1.0, 120 * vision_gain(1.0)), "L")
+        net.run(1000)
+        day = net.rate("DNa02", "R") - net.rate("DNa02", "L")
+        net.reset()
+        net.drive("LC10a", saturate(1.0, 120 * vision_gain(0.0)), "L")
+        net.run(1000)
+        night = net.rate("DNa02", "R") - net.rate("DNa02", "L")
+        ok = day <= -8 and night <= -1 and abs(night) < abs(day)
+        return ok, f"yaw day={day:.1f} night={night:.1f} (want day<=-8, night<=-1, |night|<|day|)"
+    if name == "startle":
+        # Small moving things freeze the mote: LC11 fires hard while the giant
+        # fiber stays quiet, which is exactly the decoder's Startle clause.
+        for side in ("L", "R"):
+            net.drive("LC11", 100, side)
+        net.run(2000)
+        lc11 = net.rate("LC11")
+        gf = net.rate("DNp01")
+        ok = not np.isnan(lc11) and lc11 > 40 and not np.isnan(gf) and gf <= 1
+        return ok, f"LC11={lc11:.0f}Hz (want >40), DNp01={gf:.1f}Hz (want <=1)"
     if name == "groom":
         net.drive("DNg62", 0)  # driven via JO proxies below
         for t in ("JO-FV", "JO-CM", "BM_InOm"):
@@ -287,7 +325,7 @@ def main() -> int:
     ap.add_argument("--circuits", default="Circuits")
     ap.add_argument("--connectome", help="whole-CNS file from tools/extract_connectome.py, instead of the circuits")
     ap.add_argument("--experiment", default="all",
-                    choices=["all", "silent", "sugar", "bitter", "loom", "groom"])
+                    choices=["all", "silent", "sugar", "bitter", "loom", "groom", "night", "startle"])
     ap.add_argument("--gain", type=float, help="default 0.65 (circuits) or 0.8 (whole CNS)")
     ap.add_argument("--std-u", type=float, help="short-term depression per spike; default 0 (circuits) or 0.05 (whole CNS)")
     ap.add_argument("--std-tau", type=float, help="depression recovery in ms; default 300")
@@ -302,7 +340,7 @@ def main() -> int:
     std_tau = defaults["std_tau"] if args.std_tau is None else args.std_tau
     net = CircuitNet(graph, gain=gain, std_u=std_u, std_tau=std_tau)
     print(f"loaded {net.n} neurons, gain={gain}, depression U={std_u} tau={std_tau}ms")
-    names = ["silent", "sugar", "bitter", "loom", "groom"] \
+    names = ["silent", "sugar", "bitter", "loom", "groom", "night", "startle"] \
         if args.experiment == "all" else [args.experiment]
     failed = 0
     for name in names:
