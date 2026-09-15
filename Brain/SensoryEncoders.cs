@@ -57,6 +57,8 @@ namespace FlyRarria.Brain
 		double vision = VisionGain(f.LightLevel);
 		Add("LC4", f.LoomLeft, 150 * vision, "L");
 		Add("LC4", f.LoomRight, 150 * vision, "R");
+		Add("LPLC1", f.LoomLeft, 150 * vision, "L");
+		Add("LPLC1", f.LoomRight, 150 * vision, "R");
 		Add("LPLC2", f.LoomLeft, 150 * vision, "L");
 		Add("LPLC2", f.LoomRight, 150 * vision, "R");
 		Add("LC10a", f.ChaseLeft, 120 * vision, "L");
@@ -69,10 +71,15 @@ namespace FlyRarria.Brain
 			double sweet = SugarGain(f.Hunger);
 			Add("LB3b", f.SugarContact, 120 * sweet);
 			Add("LB3c", f.SugarContact, 120 * sweet);
-			Add("PhG1a", f.SugarContact, 100 * sweet);
-			Add("LgLG3", f.SugarContact, 80 * sweet);
-			Add("LB1a", f.BitterContact, 120);
-			Add("LB1b", f.BitterContact, 120);
+		Add("PhG1a", f.SugarContact, 100 * sweet);
+		Add("PhG1b", f.SugarContact, 100 * sweet);
+		Add("PhG1c", f.SugarContact, 100 * sweet);
+		Add("LgLG3", f.SugarContact, 80 * sweet);
+		Add("LgLG4", f.SugarContact, 80 * sweet);
+		Add("LB1a", f.BitterContact, 120);
+		Add("LB1b", f.BitterContact, 120);
+		Add("LB1c", f.BitterContact, 120);
+		Add("LB1d", f.BitterContact, 120);
 
 		// Smell: food-ester glomeruli, split by side so the brain knows which way
 		// dinner is. Weighted by hunger like sugar: a full fly barely smells food,
@@ -83,11 +90,13 @@ namespace FlyRarria.Brain
 		Add("ORN_VA2", f.FoodSmellLeft, 60 * smell, "L");
 		Add("ORN_VA2", f.FoodSmellRight, 60 * smell, "R");
 
-			// Mechano: wind splits by side; touch/damage drive bristles + grooming JO.
-			Add("prefix:JO-C", f.WindLeft, 120, "L"); // JO-C/E: static antennal deflection (wind)
-			Add("prefix:JO-E", f.WindLeft, 120, "L");
-			Add("prefix:JO-C", f.WindRight, 120, "R");
-			Add("prefix:JO-E", f.WindRight, 120, "R");
+		// Mechano: wind splits by side; touch/damage drive bristles + grooming JO.
+		// JO-CM is the only JO-C* type in male-cns (there is no JO-E*), so wind
+		// drives it alone: a 30-neuron population that primes grooming (~24-35Hz
+		// on the groom DNs in a storm, usually over the 30Hz threshold) but only
+		// really grooms together with rain or damage.
+		Add("prefix:JO-C", f.WindLeft, 120, "L"); // static antennal deflection (wind)
+		Add("prefix:JO-C", f.WindRight, 120, "R");
 			Add("JO-FV", f.Touch, 120);
 			Add("BM_InOm", f.Touch, 100);
 			Add("BM_InOm", f.DamageFlash, 200);

@@ -49,7 +49,7 @@ namespace FlyRarria.Brain
 
 			public static Thresholds Default => new Thresholds {
 				FeedMn9Hz = 35, // sugar drives MN9 ~57Hz; touch/bristles leak ~25Hz into it
-				GroomADnHz = 40,
+				GroomADnHz = 30, // strong wind alone reads ~35; rain/damage read 110+; other baselines read 0
 				SongPip10Hz = 15,
 			SeekOrnHz = 25, // odor at 60Hz drives ORNs ~70Hz; hunger-weighted full-fly ~11Hz stays out
 				SteerMinHz = 3,

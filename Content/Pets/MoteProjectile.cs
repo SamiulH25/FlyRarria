@@ -52,6 +52,7 @@ namespace FlyRarria.Content.Pets
 		private double _stepMs; // written by the step's worker, read once it's done
 		private bool _brainLoaded;
 		private int _feedCd;
+		private int _scareCd;
 		private float _damageFlash;
 		private int _lastLife = -1;
 	/// <summary>Offset to the worst closing hostile at the last sample, so Escape flees the threat.</summary>
@@ -79,6 +80,8 @@ namespace FlyRarria.Content.Pets
 		public int[] LastSpikes { get; private set; } = new int[0];
 		/// <summary>The sensory drives applied on the latest brain step.</summary>
 		public IReadOnlyList<(string type, string side, double hz)> LastDrives { get; private set; } = new List<(string, string, double)>();
+	/// <summary>The world sample driving the latest brain step (for debug readouts).</summary>
+	public SensoryFrame LastSample => _stepFrame;
 		/// <summary>Wall-clock time of the latest 50 ms brain step.</summary>
 		public double LastStepMs { get; private set; }
 		/// <summary>Brain time over game time, smoothed: below 1 when steps overrun their 3 ticks.</summary>
@@ -423,29 +426,30 @@ namespace FlyRarria.Content.Pets
 			return n;
 		}
 
-		private void TendBond(Player player, SensoryFrame frame, int gameTicks)
-		{
-			var bond = BondSystem.Instance?.Get(player);
-			if (bond == null) {
-				return;
-			}
-			bond.Tick(gameTicks / 3600f); // game ticks -> real-time minutes
-			if (--_feedCd > 0) {
-				return;
-			}
-			if (frame.SugarContact > 0.5f && _cmd.Mode == MoteMode.Feed) {
-				bond.Feed(sweet: true);
-				_feedCd = MealCooldownBrainTicks;
-			}
-			else if (frame.BitterContact > 0.5f) {
-				bond.Feed(sweet: false);
-				_feedCd = MealCooldownBrainTicks;
-			}
-			else if (_cmd.Mode == MoteMode.Escape) {
-				bond.SharedScare();
-				_feedCd = MealCooldownBrainTicks;
-			}
+	private void TendBond(Player player, SensoryFrame frame, int gameTicks)
+	{
+		var bond = BondSystem.Instance?.Get(player);
+		if (bond == null) {
+			return;
 		}
+		bond.Tick(gameTicks / 3600f); // game ticks -> real-time minutes
+		// Scares bond on their own cooldown: fleeing right after a meal still counts.
+		if (--_scareCd <= 0 && _cmd.Mode == MoteMode.Escape) {
+			bond.SharedScare();
+			_scareCd = MealCooldownBrainTicks;
+		}
+		if (--_feedCd > 0) {
+			return;
+		}
+		if (frame.SugarContact > 0.5f && _cmd.Mode == MoteMode.Feed) {
+			bond.Feed(sweet: true);
+			_feedCd = MealCooldownBrainTicks;
+		}
+		else if (frame.BitterContact > 0.5f) {
+			bond.Feed(sweet: false);
+			_feedCd = MealCooldownBrainTicks;
+		}
+	}
 
 		private void Steer(Player player)
 		{
@@ -500,11 +504,24 @@ namespace FlyRarria.Content.Pets
 					// Looming seen but no giant-fiber takeoff: freeze in place.
 					response = 0.35f;
 					break;
-				case MoteMode.Feed:
-				case MoteMode.Groom:
-				case MoteMode.Song:
-					desired = toPlayer * 0.02f;
-					break;
+			case MoteMode.Feed: {
+				// Eating at contact: hold position with a nibbling bob.
+				float bob = (float)Math.Sin(Main.GameUpdateCount * 0.3) * 0.5f;
+				desired = toPlayer * 0.01f + new Vector2(0, bob);
+				break;
+			}
+			case MoteMode.Groom: {
+				// Shaking water off: rapid side-to-side shimmy in place.
+				float shimmy = (Projectile.frameCounter % 16 < 8) ? 1.5f : -1.5f;
+				desired = new Vector2(shimmy, 0);
+				break;
+			}
+			case MoteMode.Song: {
+				// Courtship dance: slow orbit around the owner.
+				Vector2 dir = toPlayer.SafeNormalize(Vector2.UnitY);
+				desired = new Vector2(-dir.Y, dir.X) * 2f + toPlayer * 0.01f;
+				break;
+			}
 				default: {
 					if (_cmd.Forward < 0 && dist > 1) {
 						// MDN backward walking: back away from the owner.

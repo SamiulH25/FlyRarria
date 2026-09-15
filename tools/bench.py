@@ -163,6 +163,7 @@ class CircuitNet:
         self.dt = dt_ms
         self.std_u = std_u
         self.std_tau = std_tau
+        self.seed = seed
         self.rng = np.random.default_rng(seed)
         self.tau_m, self.tau_s = 20.0, 5.0
         self.rest, self.thr = -52.0, -45.0
@@ -180,6 +181,10 @@ class CircuitNet:
         self.qi = 0
         self.hz = np.zeros(self.n)
         self.t = 0
+        # Each experiment is an independent trial: restart the noise stream so
+        # results never depend on which experiments ran before (the fallback
+        # wind path is noise-bistable and otherwise latches silent on repeats).
+        self.rng = np.random.default_rng(self.seed)
         self.resource = np.ones(self.n)
         self.last_fire = np.zeros(self.n, np.int64)
 
@@ -261,7 +266,7 @@ def experiment(net: CircuitNet, name: str):
         total = net.last.sum()
         return total == 0, f"total spikes={total:.0f} (want 0)"
     if name == "sugar":
-        for t, hz in [("LB3b", 120), ("LB3c", 120), ("PhG1a", 100), ("LgLG3", 80)]:
+        for t, hz in [("LB3b", 120), ("LB3c", 120), ("PhG1a", 100), ("PhG1b", 100), ("PhG1c", 100), ("LgLG3", 80), ("LgLG4", 80)]:
             net.drive(t, hz)
         net.run(2000)
         mn9 = net.rate("MN9")
@@ -270,7 +275,7 @@ def experiment(net: CircuitNet, name: str):
         kc = f", Kenyon cells {net.last[kcs].mean():.1f}Hz" if kcs else ""
         return ok, f"MN9={mn9:.0f}Hz (want 30-90){kc}"
     if name == "bitter":
-        for t, hz in [("LB3b", 120), ("LB3c", 120), ("LB1a", 120), ("LB1b", 120)]:
+        for t, hz in [("LB3b", 120), ("LB3c", 120), ("LB1a", 120), ("LB1b", 120), ("LB1c", 120), ("LB1d", 120)]:
             net.drive(t, hz)
         net.run(2000)
         mn9 = net.rate("MN9")
@@ -279,6 +284,7 @@ def experiment(net: CircuitNet, name: str):
     if name == "loom":
         for side in ("L", "R"):
             net.drive("LC4", 150, side)
+            net.drive("LPLC1", 150, side)
             net.drive("LPLC2", 150, side)
         net.run(1000)
         gf = net.rate("DNp01")
@@ -346,7 +352,6 @@ def main() -> int:
     ap.add_argument("--std-u", type=float, help="short-term depression per spike; default 0 (circuits) or 0.05 (whole CNS)")
     ap.add_argument("--std-tau", type=float, help="depression recovery in ms; default 300")
     args = ap.parse_args()
-
     if args.connectome:
         graph, defaults = load_connectome(Path(args.connectome)), WHOLE_CNS_DEFAULTS
     else:

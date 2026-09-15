@@ -21,6 +21,16 @@ Cut from `main` at `3d04223`. Inherits all `fly-brain.md` known issues.
   ORN mean >= 25 Hz, steers to the smell, contact hands to FEED). bench
   `seek` passes on circuits + CNS. Proved the GF path is hair-trigger
   (1 Hz loom drive already bursts DNp01), so night dims tracking, not escape.
+- 2026-09-15 — Andrew gap hunt (probed, not just read): wind alone reads
+  ~24-35 on the groom DNs (dose: 67Hz->12, 110Hz->24, 150Hz->53) vs rain/
+  damage 110+, so threshold 40->30 and the dead JO-E drive line is gone;
+  storms usually groom, never on threshold 40. Fallback wind is
+  noise-bistable (32 once, 0 on repeats), so bench reseeds per experiment.
+  Feed/Groom/Song now move differently (nibble bob / shimmy / orbit); scare
+  has its own bond cooldown; `/fly senses` reports live frame values. Still
+  open: SONG trigger (VA1v does not reach pIP10; top afferent aIPg7's drivers
+  unknown), Sleep stays game-side, damage grooms instead of alarming,
+  fallback lacks LC10a/pIP10/ORN_VA1v/TRN_VP2 (dead on fallback).
 - 2026-09-14 — Documented intended behaviour of every `MoteMode`
   (Idle / Follow / Escape / Startle / Feed / Groom / Song / Sleep).
 - 2026-09-14 — Input-roadmap discussion: `LightLevel` sampled but never
